@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "skipLibCheck": false
+  },
+  "include": ["tests/**/*.ts", "packages/**/*.ts", "apps/**/*.ts"],
+  "exclude": ["node_modules", "**/dist", "**/node_modules"]
+}
