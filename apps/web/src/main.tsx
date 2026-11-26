@@ -1,4 +1,3 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { InitializeParams, InitializeResult } from "@qo/protocol";
@@ -14,12 +13,16 @@ async function browserHandshake(): Promise<InitializeResult> {
       credentials: "same-origin",
     });
     if (!response.ok)
-      throw new Error("登录链接已失效。运行 qo-server login-link 获取新链接。");
+      throw new Error(
+        "登录链接已失效。请从托盘选择「在浏览器中打开」，或运行 qo open。",
+      );
   }
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://${location.host}/rpc`);
     const failed = () =>
-      reject(new Error("请用 qo-server login-link 生成的链接登录。"));
+      reject(
+        new Error("请从托盘选择「在浏览器中打开」，或运行 qo open 登录。"),
+      );
     socket.onopen = () => {
       const params: InitializeParams = { versions: ["qo.v1"] };
       socket.send(
@@ -45,10 +48,7 @@ async function browserHandshake(): Promise<InitializeResult> {
 function App() {
   const [status, setStatus] = useState("正在连接本机服务…");
   useEffect(() => {
-    const handshake = isTauri()
-      ? invoke<InitializeResult>("initialize")
-      : browserHandshake();
-    handshake
+    browserHandshake()
       .then(({ version }) => setStatus(`本机服务已就绪 · ${version}`))
       .catch((error: unknown) =>
         setStatus(

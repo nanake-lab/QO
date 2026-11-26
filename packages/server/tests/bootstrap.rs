@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     process::{Child, Command, Stdio},
@@ -18,8 +18,10 @@ impl Drop for Server {
     }
 }
 
-fn isolated(root: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qo-server"));
+const SERVER: &str = env!("CARGO_BIN_EXE_qo-server");
+
+fn isolated(root: &Path, binary: &str) -> Command {
+    let mut cmd = Command::new(binary);
     cmd.env("LOCALAPPDATA", root)
         .env("XDG_RUNTIME_DIR", root.join("run"))
         .env("XDG_CONFIG_HOME", root.join("config"))
@@ -28,14 +30,21 @@ fn isolated(root: &Path) -> Command {
 }
 
 fn start(root: &Path, port: u16) -> Server {
-    let mut child = Server(isolated(root).stdout(Stdio::null()).spawn().unwrap());
+    let mut child = Server(
+        isolated(root, SERVER)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(
             child.0.try_wait().unwrap().is_none(),
             "service exited during startup"
         );
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() && endpoint(root).exists() {
+        if endpoint(root).with_file_name("desktop.json").exists()
+            && TcpStream::connect(("127.0.0.1", port)).is_ok()
+        {
             return child;
         }
         assert!(Instant::now() < deadline, "service startup timed out");
@@ -51,21 +60,53 @@ fn endpoint(root: &Path) -> std::path::PathBuf {
     }
 }
 
-fn exchange(port: u16, code: &str, origin: &str) -> (u16, Option<String>) {
+// Read headers only: even if an upgrade is incorrectly accepted, report its actual 101 status.
+fn http_response(
+    port: u16,
+    request_line: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, Option<String>) {
     let mut tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    let body = json!({"code":code}).to_string();
-    write!(tcp,"POST /auth/exchange HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
-    let mut response = String::new();
-    tcp.read_to_string(&mut response).unwrap();
-    let status = response.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let cookie = response.lines().find_map(|line| {
-        let (header, value) = line.split_once(':')?;
-        header
-            .eq_ignore_ascii_case("set-cookie")
-            .then(|| value.trim().to_string())
-    });
+    write!(tcp, "{request_line} HTTP/1.1\r\n").unwrap();
+    for (name, value) in headers {
+        write!(tcp, "{name}: {value}\r\n").unwrap();
+    }
+    write!(tcp, "Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    let mut lines = BufReader::new(tcp).lines().map(Result::unwrap);
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut cookie = None;
+    for line in lines.take_while(|line| !line.is_empty()) {
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("set-cookie")
+        {
+            cookie = Some(value.trim().to_owned());
+        }
+    }
     (status, cookie)
+}
+
+fn exchange(port: u16, code: &str, origin: &str) -> (u16, Option<String>) {
+    let authority = format!("127.0.0.1:{port}");
+    let headers = [
+        ("Host", authority.as_str()),
+        ("Origin", origin),
+        ("Content-Type", "application/json"),
+    ];
+    http_response(
+        port,
+        "POST /auth/exchange",
+        &headers,
+        &json!({"code":code}).to_string(),
+    )
 }
 
 fn upgrade(
@@ -95,16 +136,12 @@ fn upgrade(
     serde_json::from_str(ws.read().unwrap().to_text().unwrap()).ok()
 }
 
-#[test]
-fn browser_and_native_login_across_restart() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
+fn configure(root: &Path) -> u16 {
     let port = TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let origin = format!("http://127.0.0.1:{port}");
     let config = if cfg!(windows) {
         root.join("QO/config")
     } else {
@@ -116,8 +153,17 @@ fn browser_and_native_login_across_restart() {
         json!({"port":port}).to_string(),
     )
     .unwrap();
+    port
+}
+
+#[test]
+fn browser_and_native_login_across_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let port = configure(root);
+    let origin = format!("http://127.0.0.1:{port}");
     let server = start(root, port);
-    let link = isolated(root).arg("login-link").output().unwrap();
+    let link = isolated(root, SERVER).arg("login-link").output().unwrap();
     assert!(link.status.success(), "native bootstrap failed");
     let link = std::str::from_utf8(&link.stdout).unwrap().trim();
     let code = link.strip_prefix(&format!("{origin}/#login=")).unwrap();
@@ -149,7 +195,7 @@ fn browser_and_native_login_across_restart() {
         "qo.v1"
     );
     assert!(
-        !isolated(root)
+        !isolated(root, SERVER)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -160,4 +206,117 @@ fn browser_and_native_login_across_restart() {
     let _new_server = start(root, port);
     assert!(upgrade(port, &origin, "cookie", cookie, "qo.v1").is_none());
     assert!(upgrade(port, &origin, "authorization", &bearer, "qo.v1").is_none());
+}
+
+#[test]
+fn host_and_origin_guards_return_http_403() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let port = configure(root);
+    let _server = start(root, port);
+    let authority = format!("127.0.0.1:{port}");
+    let origin = format!("http://{authority}");
+    let other = format!("example.invalid:{port}");
+    let record: Value = serde_json::from_slice(&fs::read(endpoint(root)).unwrap()).unwrap();
+    let bearer = format!("Bearer {}", record["token"].as_str().unwrap());
+    let issued = isolated(root, SERVER).arg("login-link").output().unwrap();
+    assert!(issued.status.success());
+    let link = std::str::from_utf8(&issued.stdout).unwrap().trim();
+    let code = link.strip_prefix(&format!("{origin}/#login=")).unwrap();
+    let body = json!({"code":code}).to_string();
+
+    let host = ("Host", authority.as_str());
+    let same_origin = ("Origin", origin.as_str());
+    for route in ["GET /", "GET /rpc", "POST /auth/exchange"] {
+        let status = |context: &[(&str, &str)]| {
+            let mut headers = context.to_vec();
+            let payload = match route {
+                "GET /rpc" => {
+                    headers.extend([
+                        ("Connection", "Upgrade"),
+                        ("Upgrade", "websocket"),
+                        ("Sec-WebSocket-Version", "13"),
+                        ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                        ("Authorization", bearer.as_str()),
+                    ]);
+                    ""
+                }
+                "POST /auth/exchange" => {
+                    headers.push(("Content-Type", "application/json"));
+                    body.as_str()
+                }
+                _ => "",
+            };
+            http_response(port, route, &headers, payload).0
+        };
+
+        assert_eq!(
+            status(&[("Host", &other), same_origin]),
+            403,
+            "{route}: wrong Host"
+        );
+        assert_eq!(
+            status(&[host, host, same_origin]),
+            403,
+            "{route}: duplicate Host"
+        );
+        if route == "GET /" {
+            assert_eq!(status(&[host]), 200, "normal navigation without Origin");
+        } else {
+            assert_eq!(status(&[host]), 403, "{route}: missing Origin");
+            assert_eq!(
+                status(&[host, ("Origin", "http://example.invalid")]),
+                403,
+                "{route}: wrong Origin"
+            );
+            assert_eq!(
+                status(&[host, same_origin, same_origin]),
+                403,
+                "{route}: duplicate Origin"
+            );
+            let expected = if route == "GET /rpc" { 101 } else { 204 };
+            assert_eq!(
+                status(&[host, same_origin]),
+                expected,
+                "{route}: valid control"
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn qo_open_hands_a_fresh_authenticated_url_to_the_default_browser() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let port = configure(root);
+    let _server = start(root, port);
+    let origin = format!("http://127.0.0.1:{port}");
+
+    // Stand in for the system URL handler so CI never needs a graphical browser.
+    let handler = root.join("xdg-open");
+    let received = root.join("received");
+    fs::write(
+        &handler,
+        "#!/bin/sh\numask 077\nprintf '%s' \"$1\" > \"$QO_TEST_RECEIVED\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&handler, fs::Permissions::from_mode(0o700)).unwrap();
+    for _ in 0..2 {
+        let result = isolated(root, env!("CARGO_BIN_EXE_qo"))
+            .arg("open")
+            .env("PATH", root)
+            .env("QO_TEST_RECEIVED", &received)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        assert!(result.stdout.is_empty() && result.stderr.is_empty());
+        let url = fs::read_to_string(&received).unwrap();
+        let code = url.strip_prefix(&format!("{origin}/#login=")).unwrap();
+        assert_eq!(exchange(port, code, &origin).0, 204);
+        assert_eq!(exchange(port, code, &origin).0, 403);
+        fs::remove_file(&received).unwrap();
+    }
 }

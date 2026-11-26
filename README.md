@@ -12,9 +12,11 @@ pnpm build:web
 cargo run --locked -p qo-desktop
 ```
 
-The desktop app starts or attaches to the service. Closing the window hides it. Use the tray to reopen it or enable launch at login. Quitting the shell leaves the independent service running.
+The desktop app starts or attaches to the service. Closing the window hides it. Use the tray to restore the window, open QO in your default browser, or enable launch at login. Starting the desktop app again focuses its existing window. Quitting the shell leaves the independent service running.
 
-For a browser-only session, run `cargo run --locked -p qo-server`. Open the one-use link printed in the terminal. To sign in again while the service is running, use `cargo run --locked -p qo-server -- login-link` in another terminal. The default listener is `127.0.0.1:47261`. The configuration location and the port and login-link lifetime settings are in the [architecture decision](docs/adr/0001-architecture.md).
+For a browser-only session, start the service with `cargo run --locked -p qo-server`. While the service is running, choose **在浏览器中打开** in the tray or run **`qo open`**. Both request a fresh one-use link and open the system default browser. From a source checkout the equivalent command is `cargo run --locked -p qo-server --bin qo -- open`. To put the command on your Cargo bin path, run `cargo install --locked --path packages/server --bin qo` after building the web assets.
+
+The default listener is `127.0.0.1:47261`. The configuration location and the port and login-link lifetime settings are in the [architecture decision](docs/adr/0001-architecture.md).
 
 ## Development
 
@@ -34,4 +36,4 @@ cargo deny --locked check licenses
 
 ## 中文
 
-QO 的 Rust 服务可以单独运行。桌面壳直接认证，浏览器用一次性链接登录，两者加载同一份 React 网页。当前可验证登录、握手和关窗后的后台运行；任务执行与审批交付按后续卡实施。[产品定义](docs/PRODUCT.md) · [架构决定](docs/adr/0001-architecture.md)
+QO 的 Rust 服务可以单独运行。桌面窗口和浏览器都加载服务提供的 React 网页，用一次性链接换取会话 cookie。关掉页面后，可以从托盘选择「在浏览器中打开」，也可以运行 `qo open`。当前可验证登录、握手和关窗后的后台运行；任务执行与审批交付按后续卡实施。[产品定义](docs/PRODUCT.md) · [架构决定](docs/adr/0001-architecture.md)

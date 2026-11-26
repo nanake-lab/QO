@@ -3,12 +3,11 @@ use qo_server::DesktopClient;
 use std::{
     env, io,
     process::{Command, Stdio},
-    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
 use tauri::{
-    Manager, WindowEvent,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::TrayIconBuilder,
 };
@@ -54,19 +53,11 @@ fn connect_or_start() -> io::Result<DesktopClient> {
     }
 }
 
-#[tauri::command]
-fn initialize(
-    client: tauri::State<'_, Mutex<DesktopClient>>,
-) -> Result<qo_protocol::InitializeResult, String> {
-    let mut client = client.lock().map_err(|_| "QO client unavailable")?;
-    match client.initialize() {
-        Ok(result) => Ok(result),
-        Err(_) => {
-            *client = DesktopClient::discover().map_err(|_| "QO service unavailable")?;
-            client
-                .initialize()
-                .map_err(|_| "QO handshake failed".into())
-        }
+fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
     }
 }
 
@@ -76,16 +67,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let background = env::args().any(|arg| arg == "--background");
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !args.iter().any(|arg| arg == "--background") {
+                show_main(app);
+            }
+        }))
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .args(["--background"])
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![initialize])
         .setup(move |app| {
-            app.manage(Mutex::new(connect_or_start()?));
+            let login_url = connect_or_start()?.login_link()?.parse()?;
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(login_url))
+                .title("QO")
+                .visible(!background)
+                .build()?;
             let show = MenuItem::with_id(app, "show", "打开 QO", true, None::<&str>)?;
+            let browser = MenuItem::with_id(app, "browser", "在浏览器中打开", true, None::<&str>)?;
             let auto = CheckMenuItem::with_id(
                 app,
                 "autostart",
@@ -95,19 +95,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None::<&str>,
             )?;
             let quit = MenuItem::with_id(app, "quit", "退出桌面壳", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &auto, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &browser, &auto, &quit])?;
             let icon = app.default_window_icon().ok_or("missing QO icon")?.clone();
             TrayIconBuilder::new()
                 .icon(icon)
                 .tooltip("QO")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
+                    "show" => show_main(app),
+                    "browser" => {
+                        let app = app.clone();
+                        thread::spawn(move || {
+                            if qo_server::open_browser().is_err() {
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title("QO")
+                                    .body("无法在默认浏览器中打开 QO，请确认本机服务正在运行。")
+                                    .show();
+                            }
+                        });
                     }
                     "autostart" => {
                         let manager = app.autolaunch();
@@ -135,11 +142,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 })
                 .build(app)?;
-            if !background {
-                app.get_webview_window("main")
-                    .ok_or("missing main window")?
-                    .show()?;
-            }
             Ok(())
         })
         .on_window_event(|window, event| {

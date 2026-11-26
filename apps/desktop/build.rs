@@ -1,7 +1,3 @@
 fn main() {
-    tauri_build::try_build(
-        tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(&["initialize"])),
-    )
-    .expect("build QO desktop resources");
+    tauri_build::build();
 }

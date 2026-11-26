@@ -1,4 +1,4 @@
-use crate::discovery::{Endpoint, read_desktop_endpoint};
+use crate::discovery::read_desktop_endpoint;
 use qo_protocol::{InitializeResult, LoginLinkResult};
 use serde_json::{Value, json};
 use std::{
@@ -9,22 +9,16 @@ use std::{
 use tungstenite::{Message, WebSocket, client::IntoClientRequest};
 
 pub struct DesktopClient {
-    endpoint: Endpoint,
+    socket: WebSocket<TcpStream>,
+    origin: String,
 }
 
 impl DesktopClient {
     pub fn discover() -> io::Result<Self> {
-        let client = Self {
-            endpoint: read_desktop_endpoint()?,
-        };
-        client.connect()?;
-        Ok(client)
-    }
-
-    fn connect(&self) -> io::Result<(WebSocket<TcpStream>, InitializeResult)> {
-        // A blocked loopback endpoint must not hang desktop startup.
+        let endpoint = read_desktop_endpoint()?;
+        // Bound each operation on the local service while opening the UI.
         let timeout = Duration::from_secs(2);
-        let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.endpoint.port);
+        let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, endpoint.port);
         let stream = TcpStream::connect_timeout(&address.into(), timeout)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
@@ -33,30 +27,49 @@ impl DesktopClient {
             .map_err(io::Error::other)?;
         upgrade.headers_mut().insert(
             "Origin",
-            self.endpoint.origin().parse().map_err(io::Error::other)?,
+            endpoint.origin().parse().map_err(io::Error::other)?,
         );
         upgrade.headers_mut().insert(
             "Authorization",
-            format!("Bearer {}", self.endpoint.token)
+            format!("Bearer {}", endpoint.token)
                 .parse()
                 .map_err(io::Error::other)?,
         );
-        // Errors returned to the renderer must not include the request or headers.
+        // Handshake errors may include credential headers.
         let (mut ws, _) = tungstenite::client(upgrade, stream)
             .map_err(|_| io::Error::other("QO refused the desktop connection"))?;
         let result = call(&mut ws, 1, "initialize", json!({"versions":["qo.v1"]}))?;
-        Ok((ws, serde_json::from_value(result)?))
+        let _: InitializeResult = serde_json::from_value(result)?;
+        Ok(Self {
+            socket: ws,
+            origin: endpoint.origin(),
+        })
     }
 
-    pub fn initialize(&self) -> io::Result<InitializeResult> {
-        self.connect().map(|(_, init)| init)
+    pub fn login_link(mut self) -> io::Result<String> {
+        let result = call(&mut self.socket, 2, "ui.loginLink", json!({}))?;
+        let link = serde_json::from_value::<LoginLinkResult>(result)?.url;
+        let prefix = format!("{}/#login=", self.origin);
+        if !link
+            .strip_prefix(&prefix)
+            .is_some_and(|code| !code.is_empty() && code.bytes().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(io::Error::other("invalid login URL from QO"));
+        }
+        Ok(link)
     }
+}
 
-    pub fn login_link(&self) -> io::Result<String> {
-        let (mut ws, _) = self.connect()?;
-        let result = call(&mut ws, 2, "ui.loginLink", json!({}))?;
-        Ok(serde_json::from_value::<LoginLinkResult>(result)?.url)
-    }
+/// Open a newly issued login link with the OS default browser.
+pub fn open_browser() -> io::Result<()> {
+    let client = DesktopClient::discover().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("could not connect to the local QO service: {e}"),
+        )
+    })?;
+    open::that_detached(client.login_link()?)
+        .map_err(|_| io::Error::other("could not open the default browser"))
 }
 
 fn call(ws: &mut WebSocket<TcpStream>, id: u8, method: &str, params: Value) -> io::Result<Value> {

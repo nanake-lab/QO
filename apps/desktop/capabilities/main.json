@@ -1,6 +1,0 @@
-{
-  "identifier": "main-window",
-  "description": "Local QO renderer may request the negotiated protocol version.",
-  "windows": ["main"],
-  "permissions": ["allow-initialize"]
-}

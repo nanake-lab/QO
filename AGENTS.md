@@ -23,7 +23,7 @@
 - 由人定的数值和档位都要可调。纯工程数值给出默认值，并在定义旁写明取值理由。
 
 ## 安全
-- 接口只监听本机回环地址。校验 Host 和 Origin，WebSocket 在升级时用原生令牌或内置网页 cookie 认证。桌面凭据由 Rust 壳持有。
+- 接口只监听本机回环地址。校验 Host 和 Origin，WebSocket 在升级时用原生令牌或内置网页 cookie 认证。Rust 壳和本机 CLI 使用私有令牌申请登录链接，桌面 WebView 和浏览器均用会话 cookie。
 - API key 和登录凭据只从环境变量或各家 CLI 自己的登录状态读取，不写进日志、事件、证据或仓库。
 - QO 默认永远不自动批准任何操作。各家 harness 的审批策略都设成最严格。
 - CI 只用 GitHub 托管的 runner，不用任何自托管 runner。

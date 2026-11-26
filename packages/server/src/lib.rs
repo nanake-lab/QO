@@ -3,7 +3,7 @@ mod auth;
 mod client;
 mod discovery;
 
-pub use client::DesktopClient;
+pub use client::{DesktopClient, open_browser};
 pub use discovery::Settings;
 
 use auth::{BrowserSessions, secret};
@@ -146,9 +146,17 @@ async fn assets(
         Some("css") => "text/css; charset=utf-8",
         _ => "application/octet-stream",
     };
-    ([(header::CONTENT_TYPE, mime.to_owned()), (header::REFERRER_POLICY, "no-referrer".into()),
-      (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()), (header::CONTENT_SECURITY_POLICY,
-       format!("default-src 'self'; connect-src 'self' ws://{}; frame-ancestors 'none'; base-uri 'none'", service.authority))], file.contents()).into_response()
+    let policy = format!(
+        "default-src 'self'; connect-src 'self' ws://{}; frame-ancestors 'none'; base-uri 'none'",
+        service.authority,
+    );
+    let headers = [
+        (header::CONTENT_TYPE, mime),
+        (header::REFERRER_POLICY, "no-referrer"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::CONTENT_SECURITY_POLICY, policy.as_str()),
+    ];
+    (headers, file.contents()).into_response()
 }
 
 async fn upgrade(

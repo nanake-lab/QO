@@ -2,13 +2,13 @@
 
 状态：提请评审。适用于 QO 第一版及其假服务端。
 
-QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri v2 桌面壳和浏览器使用同一份 TypeScript/React 网页。关闭桌面窗口以后，可以从托盘再打开，任务仍由服务接管。桌面壳直接认证，浏览器用一次性链接登录，Nemu 用本机服务令牌连接。服务按任务归属转交审批，并按游标向客户端补发进度。QO 的 JSON Schema 同时生成 Rust 和 TypeScript 类型。
+QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri v2 桌面壳和浏览器使用同一份 TypeScript/React 网页。关闭桌面窗口以后，可以从托盘再打开，任务仍由服务接管。桌面窗口和浏览器都从服务加载网页，凭一次性链接登录；Nemu 用本机服务令牌连接。服务按任务归属转交审批，并按游标向客户端补发进度。QO 的 JSON Schema 同时生成 Rust 和 TypeScript 类型。
 
 ## 1. 进程归属
 
 **候选**　每个客户端各管一套 harness，或由一个本机服务统一托管。
 
-**决定 / 理由**　采用独立的 Rust 服务进程。桌面壳先与已有实例握手，必要时以独立的 `--serve` 进程启动同一个服务入口。无界面时可直接运行 `qo-server`。关闭窗口仅隐藏 WebView，托盘可恢复窗口。退出桌面壳也不结束服务。托盘采用 Tauri v2 核心的 `tray-icon` 功能，系统通知与用户可选的登录自启采用官方 notification、autostart 插件。自启以隐藏窗口模式连接服务。服务独占每个会话的子进程、stdio 和在途请求，可以把一份审批交给唯一的处理方。一个用户的数据目录同时只允许一个服务持有操作系统独占锁。客户端退出只释放连接。显式取消才打断执行。服务正常退出时回收进程树。服务崩溃后，使用随父进程关闭的作业或监督机制回收子进程。重启先对账，将失去 stdio 的非终态会话记为 `failed(harness_lost)`，撤销其未决审批并写入事件。用户可另开会话，旧命令不会被重发。
+**决定 / 理由**　采用独立的 Rust 服务进程。桌面壳先与已有实例握手，必要时以独立的 `--serve` 进程启动同一个服务入口。无界面时可直接运行 `qo-server`。关闭窗口仅隐藏 WebView，托盘可恢复窗口。退出桌面壳也不结束服务。托盘采用 Tauri v2 核心的 `tray-icon` 功能，系统通知与用户可选的登录自启采用官方 notification、autostart 插件。官方 single-instance 插件先于其他插件注册。再次启动时，已有实例显示并聚焦主窗口；登录自启以隐藏窗口模式连接服务。服务独占每个会话的子进程、stdio 和在途请求，可以把一份审批交给唯一的处理方。一个用户的数据目录同时只允许一个服务持有操作系统独占锁。客户端退出只释放连接。显式取消才打断执行。服务正常退出时回收进程树。服务崩溃后，使用随父进程关闭的作业或监督机制回收子进程。重启先对账，将失去 stdio 的非终态会话记为 `failed(harness_lost)`，撤销其未决审批并写入事件。用户可另开会话，旧命令不会被重发。
 
 ## 2. 连接、发现与握手
 
@@ -17,8 +17,8 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 **决定 / 理由**　QO 对客户端使用回环 WebSocket 和 JSON-RPC 2.0，业务入口是 `/rpc`。QO 与 Codex 之间使用独占的 stdio。两段传输分别协商协议。
 
 1. 服务只绑定 `127.0.0.1`，默认端口 **47261**，固定地址可供书签和桌面复用。可在第 8 节配置目录的 `settings.json` 设置 `port`；占用时报告错误并退出。启动先持有运行锁，用系统随机源生成独立的 32 字节原生凭据和桌面凭据，以临时文件原子替换 `endpoint.json` 和 `desktop.json`。两份记录只有端口和本次启动的令牌。Unix 目录 0700、记录 0600；Windows 在发布任何凭据前，为私有运行目录设置受保护、可继承的所有者 DACL。
-2. Nemu 读取 `endpoint.json`；壳的 Rust 进程持有 `desktop.json` 对应的凭据。两者均在 WebSocket 升级时发送 Bearer 和精确的 Origin。壳只对本地打包的主窗口提供具名 Tauri 命令，返回业务结果；页面不读取凭据。内置桌面和浏览器是同一界面的两种入口，与外部原生客户端区分归属。
-3. 浏览器使用 `http://127.0.0.1:<端口>/#login=<一次性码>`。服务启动签发首码，在交互终端展示；之后可用 `qo-server login-link` 从私有原生通道再签发。新码取代旧码。默认有效 120 秒，供本机切换浏览器，可配置 `loginLinkSeconds`。一次性码是凭据进入 URL 的唯一例外，放在片段中以避开 HTTP 请求行。登录脚本先清除片段，再向同源 `POST /auth/exchange` 发送码；服务原子消费后设置 HttpOnly、SameSite=Strict、Path=/rpc 的 host-only 会话 cookie。升级时浏览器自动发送 cookie。服务重启使所有旧 cookie、链接与原生令牌失效。
+2. 外部原生客户端（含 Nemu）读取 `endpoint.json`。桌面壳和 `qo open` 使用服务为内置界面签发的本机令牌（`desktop.json`），在 WebSocket 升级时发送 Bearer 和精确的 Origin，再以 `ui.loginLink` 请求新链接。只有这个原生角色可以签发链接，服务令牌不进入网页。壳把链接交给主 WebView；网页、脚本及 CSP 都来自服务，并通过同源 `/rpc` 与服务通信。壳不打包第二份页面，也不转发业务 RPC。
+3. 登录链接形如 `http://127.0.0.1:<端口>/#login=<一次性码>`。服务启动时可在交互终端展示首个链接。关掉浏览器页面后，用户可以从托盘选「在浏览器中打开」或运行 `qo open`。两者都先申请新链接，再交给系统默认浏览器打开。新码取代旧码。默认有效 120 秒，供本机切换浏览器，可配置 `loginLinkSeconds`。一次性码是凭据进入 URL 的唯一例外，放在片段中以避开 HTTP 请求行。登录脚本先清除片段，再向同源 `POST /auth/exchange` 发送码；服务原子消费后设置 HttpOnly、SameSite=Strict、Path=/rpc 的 host-only 会话 cookie。升级时浏览器自动发送 cookie。服务重启使所有旧 cookie、链接与原生令牌失效。
 4. 静态入口核对实际 Host。换码和 WebSocket 升级同时核对唯一的 Host 和 Origin，精确匹配 `127.0.0.1:<端口>` 与 `http://127.0.0.1:<端口>`。原生客户端也带该 Origin。无效、缺失或多值均拒绝，不采信转发头。网页跨端口访问由 Origin 校验阻断，Host 校验阻断 DNS 重绑定。Cookie 和 SameSite 均不区分端口，同一主机其他端口在路径匹配时也可能收到 cookie。此设计针对外部网页，同一操作系统用户下已运行的恶意程序在威胁范围之外。
 5. 在返回 101 前完成认证，把客户端角色绑定到连接。RPC 帧不重复带凭据。首条请求为 `initialize({versions:["qo.v1"]})`，成功返回选中的 `version`。无共同版本返回 `unsupported_version` 并断开。重连时重新认证和协商。本阶段已实现握手、换码及签发；任务和事件方法列在下节，供后续契约与服务使用。
 
@@ -46,7 +46,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | 方法 | 主要入参 | 结果或作用 |
 | --- | --- | --- |
 | initialize | versions | 选中的 version |
-| ui.loginLink | 无业务参数，仅私有桌面凭据可调用 | 签发浏览器用的一次性 url，CLI 使用该入口，桌面壳自身直接认证 |
+| ui.loginLink | 无业务参数，仅私有桌面凭据可调用 | 签发主窗口或默认浏览器可消费的一次性 url |
 | task.create / task.attach | taskId，外部客户端另带 ownerKey。创建时另有 name、group?、forbiddenRoots?、cwd? | 创建或恢复该连接对任务的控制。创建重试须校验同一归属和相同参数 |
 | task.close | taskId | 关闭已无活动会话的任务 |
 | state.get | 无 | 公共任务、会话、轮次、条目、用量的同一事务快照及其 cursor |
@@ -57,7 +57,20 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | usage.get | sessionId | 返回会话快照和有来源的档位分组 |
 | events.subscribe | afterCursor | 确认订阅，随后按序送出 event 通知 |
 
-公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、问题与轮次引用。成功 attach 后重送仍有效的私有回调。错误用 JSON-RPC 标准错误码或服务错误，服务错误在 `error.data.reason` 中区分 `unauthorized`、`forbidden`、`unsupported_version`、`not_found`、`conflict`、`cursor_expired`、`digest_mismatch` 和 `approval_expired`。
+公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、问题与轮次引用。成功 attach 后重送仍有效的私有回调。
+
+**错误码**　HTTP 升级或换码的 Host、Origin、凭据校验失败均返回 403。静态页面允许普通导航省略 Origin，对错误或重复 Host 返回 403。连接升级后，客户端按 `error.code` 和 `error.data.reason` 处理 RPC 错误。
+
+| code | reason | 触发条件 |
+| --- | --- | --- |
+| -32001 | unsupported_version | 握手没有共同协议版本，回复后断开 |
+| -32002 | initialize_required | 协商前发了其他方法，回复后断开 |
+| -32003 | forbidden | 认证角色无权调用，例如网页或外部原生客户端请求签发登录链接 |
+| -32601 | method_not_found | 协商后调用未知方法 |
+| -32602 | invalid_params | 握手参数不符合 schema |
+| -32603 | internal_error | 服务签发登录链接失败 |
+
+后续业务方法还需区分 `unauthorized`、`not_found`、`conflict`、`cursor_expired`、`digest_mismatch` 和 `approval_expired`。这些原因与数值的对应关系在 2/2 的协议 schema 中定义。
 
 ## 4. 持久事件与断线补发
 
@@ -73,7 +86,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 **候选**　由界面代批、以可自报的 clientId 辨认所有者，或由任务创建方持有独立随机密钥。前两种无法隔开网页和 Nemu 的决定权。
 
-**决定 / 理由**　服务只为内置界面登记固定所有者。浏览器完成换码或桌面壳完成原生认证后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。
+**决定 / 理由**　服务只为内置界面登记固定所有者。浏览器或桌面 WebView 完成换码后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。
 
 1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。digest 使用 SHA-256，计算对象含 approvalId、任务/轮次/条目引用、原始请求、操作上下文、summary 和 expiresAt。用 RFC 8785 规范 JSON 的 UTF-8 字节，输出小写 hex。[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
 2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
@@ -128,7 +141,7 @@ QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/sche
 | 用途 | Windows | 其他系统 |
 | --- | --- | --- |
 | 状态、数据库、Codex 专用目录 | `%LOCALAPPDATA%/QO/state` | `$XDG_STATE_HOME/qo`，默认 `~/.local/state/qo` |
-| 运行锁与 endpoint.json | `%LOCALAPPDATA%/QO/run` | `$XDG_RUNTIME_DIR/qo`，缺失时使用上述私有状态目录内的 `run` |
+| 运行锁、endpoint.json 与 desktop.json | `%LOCALAPPDATA%/QO/run` | `$XDG_RUNTIME_DIR/qo`，缺失时使用上述私有状态目录内的 `run` |
 | 用户配置 | `%LOCALAPPDATA%/QO/config` | `$XDG_CONFIG_HOME/qo`，默认 `~/.config/qo` |
 
 运行时文件的权限见第 2 节。状态目录也限当前用户。重启恢复事务、高水位与任务归属，处理失联会话后再开放订阅。默认工作根为 Windows 的 `%LOCALAPPDATA%/QO/workspaces` 或其他系统的 `$XDG_DATA_HOME/qo/workspaces`（默认 `~/.local/share/qo/workspaces`）。此路径可配置。启动时校验它与私有状态、配置、运行目录互不覆盖。[XDG 目录规范](https://specifications.freedesktop.org/basedir-spec/latest/)
