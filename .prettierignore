@@ -1,9 +1,13 @@
-# Keep the task card's Markdown, including its list spacing.
 AGENTS.md
 docs/PRODUCT.md
-# Prose uses manually laid-out tables. pnpm owns its lockfile.
 docs/adr/
 pnpm-lock.yaml
+Cargo.lock
 LICENSE
-dist/
+**/dist/
 coverage/
+target/
+apps/desktop/gen/
+packages/protocol/generated/
+packages/adapter-codex/schema/
+packages/adapter-codex/src/generated.rs

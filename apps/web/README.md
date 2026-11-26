@@ -1,5 +1,5 @@
 # QO web client
 
-Antigravity will implement the local browser client here. The workspace starts with the [product definition](../../docs/PRODUCT.md) and [architecture](../../docs/adr/0001-architecture.md).
+This React/TypeScript workspace renders in both Tauri v2 and a local browser. Build the shared assets with `pnpm build:web` from the repository root. The bootstrap page negotiates the QO protocol using the native bridge in Tauri or the authenticated WebSocket in a browser. The task and approval views belong to Antigravity.
 
-本机网页将展示所有任务的进度，并处理网页自己创建的任务的审批。
+网页与桌面使用同一份构建产物。启动方式见[项目首页](../../README.md)，任务界面的设计依据见[产品定义](../../docs/PRODUCT.md)。

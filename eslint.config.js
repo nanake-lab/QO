@@ -1,9 +1,17 @@
 import tsParser from "@typescript-eslint/parser";
 
 export default [
-  { ignores: ["**/dist/**", "coverage/**"] },
   {
-    files: ["**/*.{js,mjs,ts}"],
+    ignores: [
+      "**/dist/**",
+      "coverage/**",
+      "target/**",
+      "apps/desktop/gen/**",
+      "packages/protocol/generated/**",
+    ],
+  },
+  {
+    files: ["**/*.{js,mjs,ts,tsx}"],
     rules: {
       "no-debugger": "error",
       "no-dupe-keys": "error",
@@ -13,7 +21,7 @@ export default [
     },
   },
   {
-    files: ["**/*.ts"],
+    files: ["**/*.{ts,tsx}"],
     languageOptions: { parser: tsParser },
   },
 ];

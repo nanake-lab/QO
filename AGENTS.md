@@ -16,13 +16,14 @@
 - 评论、提交和 PR 里不加署名行。
 
 ## 代码
-- TypeScript，严格模式。Node 24，pnpm 12.11.2。依赖写死版本，锁文件进仓库。
-- 应用代码不得引入 GPL/AGPL 许可证的依赖。每新增一个第三方包，在 PR 里写包名、许可证和理由。
+- 服务、适配器、协议类型、Tauri v2 桌面壳使用 Rust 1.99.0 和 Cargo workspace。网页使用 React、严格 TypeScript、Node 24 和 pnpm 12.11.2。第三方直接依赖固定版本，Cargo 和 pnpm 锁文件进仓库。
+- QO 的 JSON Schema 是公开协议唯一源头，Rust 和 TypeScript 生成物随仓库提交。Codex 适配器从固定版 CLI 导出的 JSON Schema 生成绑定。
+- 应用代码禁止 GPL/AGPL 依赖，Rust 依赖图用 cargo-deny 检查许可。每新增一个第三方包，在 PR 里写包名、许可证和理由。
 - 先写简单直接的代码，不写防御性的冗余。
 - 由人定的数值和档位都要可调。纯工程数值给出默认值，并在定义旁写明取值理由。
 
 ## 安全
-- 接口只监听本机回环地址，每个请求都要带令牌，并核对 Origin。
+- 接口只监听本机回环地址。校验 Host 和 Origin，WebSocket 在升级时用原生令牌或内置网页 cookie 认证。桌面凭据由 Rust 壳持有。
 - API key 和登录凭据只从环境变量或各家 CLI 自己的登录状态读取，不写进日志、事件、证据或仓库。
 - QO 默认永远不自动批准任何操作。各家 harness 的审批策略都设成最严格。
 - CI 只用 GitHub 托管的 runner，不用任何自托管 runner。

@@ -6,9 +6,15 @@
     "strict": true,
     "noEmit": true,
     "resolveJsonModule": true,
+    "jsx": "react-jsx",
     "types": ["node"],
     "skipLibCheck": false
   },
-  "include": ["tests/**/*.ts", "packages/**/*.ts", "apps/**/*.ts"],
-  "exclude": ["node_modules", "**/dist", "**/node_modules"]
+  "include": [
+    "tests/**/*.ts",
+    "packages/**/*.ts",
+    "apps/web/src/**/*.tsx",
+    "apps/web/src/**/*.ts"
+  ],
+  "exclude": ["**/node_modules", "**/dist"]
 }

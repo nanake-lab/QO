@@ -2,25 +2,25 @@
 
 状态：提请评审。适用于 QO 第一版及其假服务端。
 
-QO 在本机运行一个服务，网页和 Nemu 都向它派活。一个任务可以开多个会话，每个会话由服务启动一份 Codex。客户端能看到所有会话的进度，只有创建任务的客户端能处理它的审批。断线时，Codex 遇到审批会继续等，客户端回来后可以接着处理。QO 把状态变化写进本机数据库，用游标补发进度。用量按 Codex 实际给出的字段展示。
+QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri v2 桌面壳和浏览器使用同一份 TypeScript/React 网页。关闭桌面窗口以后，可以从托盘再打开，任务仍由服务接管。桌面壳直接认证，浏览器用一次性链接登录，Nemu 用本机服务令牌连接。服务按任务归属转交审批，并按游标向客户端补发进度。QO 的 JSON Schema 同时生成 Rust 和 TypeScript 类型。
 
 ## 1. 进程归属
 
 **候选**　每个客户端各管一套 harness，或由一个本机服务统一托管。
 
-**决定 / 理由**　采用后一种。服务独占每个会话的子进程、stdio 和在途请求，可以把一份审批交给唯一的处理方。一个用户的数据目录同时只允许一个服务持有操作系统独占锁。客户端退出只释放连接。显式取消才打断执行。服务正常退出时回收进程树。服务崩溃后，使用随父进程关闭的作业或监督机制回收子进程。重启先对账，将失去 stdio 的非终态会话记为 `failed(harness_lost)`，撤销其未决审批并写入事件。用户可另开会话，旧命令不会被重发。
+**决定 / 理由**　采用独立的 Rust 服务进程。桌面壳先与已有实例握手，必要时以独立的 `--serve` 进程启动同一个服务入口。无界面时可直接运行 `qo-server`。关闭窗口仅隐藏 WebView，托盘可恢复窗口。退出桌面壳也不结束服务。托盘采用 Tauri v2 核心的 `tray-icon` 功能，系统通知与用户可选的登录自启采用官方 notification、autostart 插件。自启以隐藏窗口模式连接服务。服务独占每个会话的子进程、stdio 和在途请求，可以把一份审批交给唯一的处理方。一个用户的数据目录同时只允许一个服务持有操作系统独占锁。客户端退出只释放连接。显式取消才打断执行。服务正常退出时回收进程树。服务崩溃后，使用随父进程关闭的作业或监督机制回收子进程。重启先对账，将失去 stdio 的非终态会话记为 `failed(harness_lost)`，撤销其未决审批并写入事件。用户可另开会话，旧命令不会被重发。
 
 ## 2. 连接、发现与握手
 
 **候选**　Windows 命名管道可以使用系统 ACL，原生客户端支持好。浏览器需要桥接，其他平台还要维护另一套传输。回环 WebSocket 支持浏览器与原生客户端共用双向 RPC。
 
-**决定 / 理由**　服务绑定 IPv4 字面地址 `127.0.0.1:0`，由系统分配端口。网页从同一端口的静态入口打开，业务接口统一为 `/rpc` 上的 WebSocket 和 JSON-RPC 2.0。启动顺序如下。
+**决定 / 理由**　QO 对客户端使用回环 WebSocket 和 JSON-RPC 2.0，业务入口是 `/rpc`。QO 与 Codex 之间使用独占的 stdio。两段传输分别协商协议。
 
-1. 持有实例锁以后，用系统 CSPRNG 生成 32 字节服务令牌，以无填充 base64url 编码（256 位随机性）。成功监听后原子替换运行目录的 `endpoint.json`，内容为 `{port,token}`。每次启动换令牌。Unix 私有目录权限为 0700，临时文件和最终文件为 0600。Windows 停止继承，在创建目录和临时文件时将访问权限制到当前用户 SID。无法建立私有权限就中止启动。目录位置见第 8 节。
-2. 原生客户端读该文件，从端口构造地址。浏览器用户在本机打开该地址，将文件中的令牌粘贴到页面，页面只在内存保管它。静态入口只提供程序资源。文件、任务和令牌均不能从静态路径读取。刷新页面需要重新输入服务令牌。
-3. 升级请求必须有且只有一个 `Host: 127.0.0.1:<实际端口>` 和一个精确匹配的 `Origin: http://127.0.0.1:<实际端口>`。原生客户端也发送该 Origin。缺失、多值、`null`、域名、其他端口及代理转发头都不能替代这两项校验。固定 Host 阻断 DNS 重绑定，同源检查阻断其他网页，令牌验证覆盖能自填请求头的客户端。
-4. 浏览器 WebSocket 构造器通过子协议列表发送 `qo.rpc` 和 `qo.auth.<token>`。原生客户端用相同机制。服务在返回 101 之前校验令牌，只回显选中的 `qo.rpc`。每条客户端 RPC 请求（包括握手）还须携带 `params.token`。令牌用定长、常数时间比较，凭据头和消息正文不记日志。令牌不得放在 URL。错误的升级返回 403，未认证的消息不分派。
-5. 首条请求为 `initialize({versions:["qo.v1"],token})`。服务从交集中选支持的最高版本，返回 `{version:"qo.v1"}`。没有交集返回 `unsupported_version` 并关闭。协商前不接受业务调用，每次重连重新协商。服务启动新的实例后重新读取发现文件。
+1. 服务只绑定 `127.0.0.1`，默认端口 **47261**，固定地址可供书签和桌面复用。可在第 8 节配置目录的 `settings.json` 设置 `port`；占用时报告错误并退出。启动先持有运行锁，用系统随机源生成独立的 32 字节原生凭据和桌面凭据，以临时文件原子替换 `endpoint.json` 和 `desktop.json`。两份记录只有端口和本次启动的令牌。Unix 目录 0700、记录 0600；Windows 在发布任何凭据前，为私有运行目录设置受保护、可继承的所有者 DACL。
+2. Nemu 读取 `endpoint.json`；壳的 Rust 进程持有 `desktop.json` 对应的凭据。两者均在 WebSocket 升级时发送 Bearer 和精确的 Origin。壳只对本地打包的主窗口提供具名 Tauri 命令，返回业务结果；页面不读取凭据。内置桌面和浏览器是同一界面的两种入口，与外部原生客户端区分归属。
+3. 浏览器使用 `http://127.0.0.1:<端口>/#login=<一次性码>`。服务启动签发首码，在交互终端展示；之后可用 `qo-server login-link` 从私有原生通道再签发。新码取代旧码。默认有效 120 秒，供本机切换浏览器，可配置 `loginLinkSeconds`。一次性码是凭据进入 URL 的唯一例外，放在片段中以避开 HTTP 请求行。登录脚本先清除片段，再向同源 `POST /auth/exchange` 发送码；服务原子消费后设置 HttpOnly、SameSite=Strict、Path=/rpc 的 host-only 会话 cookie。升级时浏览器自动发送 cookie。服务重启使所有旧 cookie、链接与原生令牌失效。
+4. 静态入口核对实际 Host。换码和 WebSocket 升级同时核对唯一的 Host 和 Origin，精确匹配 `127.0.0.1:<端口>` 与 `http://127.0.0.1:<端口>`。原生客户端也带该 Origin。无效、缺失或多值均拒绝，不采信转发头。网页跨端口访问由 Origin 校验阻断，Host 校验阻断 DNS 重绑定。Cookie 和 SameSite 均不区分端口，同一主机其他端口在路径匹配时也可能收到 cookie。此设计针对外部网页，同一操作系统用户下已运行的恶意程序在威胁范围之外。
+5. 在返回 101 前完成认证，把客户端角色绑定到连接。RPC 帧不重复带凭据。首条请求为 `initialize({versions:["qo.v1"]})`，成功返回选中的 `version`。无共同版本返回 `unsupported_version` 并断开。重连时重新认证和协商。本阶段已实现握手、换码及签发；任务和事件方法列在下节，供后续契约与服务使用。
 
 ## 3. 对象、状态与外部操作
 
@@ -30,23 +30,24 @@ QO 在本机运行一个服务，网页和 Nemu 都向它派活。一个任务�
 
 | 对象 | 字段 | 产生与状态变化 |
 | --- | --- | --- |
-| Task 任务 | taskId、name、group?、cwd、forbiddenRoots、state、createdAt | 创建方生成 taskId 和独立的任务密钥。open 可开多个会话。显式关闭且所有会话已终止后成为 closed。 |
+| Task 任务 | taskId、name、group?、cwd、forbiddenRoots、state、createdAt | 创建方生成 taskId。服务登记内置界面归属，外部创建方另生成任务密钥。open 可开多个会话。显式关闭且所有会话已终止后成为 closed。 |
 | Session 会话 | sessionId、taskId、harness、model?、reasoningEffort?、serviceTier?、state、error?、createdAt | starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。 |
 | Turn 轮次 | turnId、sessionId、input、state、startedAt、endedAt? | 同一会话同时只有一个 active 轮次。running → completed / interrupted / failed。等待期间轮次仍为 running。追加指令属于同一轮。 |
 | Item 条目 | itemId、turnId、kind、state、content、startedAt、endedAt? | assistant_message 累积文本。command_execution 记录命令、输出和可用的退出码。file_change 记录路径与变更。running → completed / failed / interrupted。一次性条目可直接以终态产生。 |
-| ApprovalRequest 审批请求 | approvalId、taskId、sessionId、turnId、itemId、kind、raw、summary、digest、expiresAt、state | 新请求为 pending，只接受一份决定。可进入 decided、expired 或 withdrawn。续期发新 ID。私有载荷的可见性见第 5 节。 |
-| ApprovalDecision 审批决定 | decisionId、approvalId、digest、choice、decidedAt、delivery | 创建方为每次决定生成 decisionId，choice 为 allow_once 或 deny。服务持久化后 delivery 为 recorded，交付后为 sent，无法确认则为 unknown，不重放授权。 |
+| ApprovalRequest 审批请求 | approvalId、taskId、sessionId、turnId?、itemId?、kind、raw、summary、digest、expiresAt、state | 新请求为 pending，只接受一份决定。可进入 decided、expired 或 withdrawn。续期发新 ID。私有载荷的可见性见第 5 节。 |
+| ApprovalDecision 审批决定 | decisionId、approvalId、digest、choice、decidedAt、delivery | 创建方为每次决定生成 decisionId，choice 为 allow_once 或 deny。征询类请求可带所有者明确填写且符合请求表单的回答。服务持久化后 delivery 为 recorded，交付后为 sent，无法确认则为 unknown，不重放授权。 |
 | Usage 用量 | sessionId、turnId?、model?、reasoningEffort?、serviceTier?、source、counts、observedAt | 只读快照，以来源、会话及其统计维度为键，同一键由新快照替换。缺失值为 null。观察样本的唯一 ID 为对应事件游标。 |
 | Event 事件 | cursor、at、kind、taskId、sessionId?、turnId?、payload | cursor 是事件 ID，由数据库事务分配。公开日志只追加。事件写入后不修改。 |
 
 当同一轮有多个未决回调，展示优先级为等审批、等输入、在跑。逐一解决后重算状态。`turn.interrupt` 结束本轮，仍可开下一轮。`session.cancel` 终止整场会话及其在途请求。取消请求与完成回报并发时，以服务事务先提交的有效终态为准。
 
-**供 2/2 实现的方法表**　每个方法的 `params` 均含服务令牌。除握手外，读操作对完成握手的连接开放。修改已存在任务的操作都校验该连接的任务归属。
+**供 2/2 实现的方法表**　凭据只在升级握手出现。除握手外，读操作对完成握手的连接开放。修改已存在任务的操作都校验该连接的任务归属。
 
 | 方法 | 主要入参 | 结果或作用 |
 | --- | --- | --- |
 | initialize | versions | 选中的 version |
-| task.create / task.attach | taskId、ownerKey。创建时另有 name、group?、forbiddenRoots?、cwd? | 创建或恢复该连接对任务的控制。创建重试须校验同一密钥和相同参数 |
+| ui.loginLink | 无业务参数，仅私有桌面凭据可调用 | 签发浏览器用的一次性 url，CLI 使用该入口，桌面壳自身直接认证 |
+| task.create / task.attach | taskId，外部客户端另带 ownerKey。创建时另有 name、group?、forbiddenRoots?、cwd? | 创建或恢复该连接对任务的控制。创建重试须校验同一归属和相同参数 |
 | task.close | taskId | 关闭已无活动会话的任务 |
 | state.get | 无 | 公共任务、会话、轮次、条目、用量的同一事务快照及其 cursor |
 | session.open / session.finish / session.cancel | taskId。操作已有会话时带 sessionId，打开时可选 model、reasoningEffort、serviceTier | 返回会话。finish 只接受 idle |
@@ -72,11 +73,11 @@ QO 在本机运行一个服务，网页和 Nemu 都向它派活。一个任务�
 
 **候选**　由界面代批、以可自报的 clientId 辨认所有者，或由任务创建方持有独立随机密钥。前两种无法隔开网页和 Nemu 的决定权。
 
-**决定 / 理由**　创建方为每任务生成 32 字节随机 ownerKey，服务只持久化它的 SHA-256 校验值，按任务校验。服务令牌只证明能使用本机服务。成功创建或 attach 才将任务绑定到连接。同一所有者重新 attach 会撤下旧连接的处理权。Nemu 将密钥放在自己的用户私有存储。网页仅在内存持有任务密钥，创建者可导出到仅自己可读的本机文件。服务换端口后网页来源也变了，需要用恢复副本重新 attach。丢失密钥的任务可查看公开进度，不能从公共接口重新领取控制权。QO 没有客户端账户表。
+**决定 / 理由**　服务只为内置界面登记固定所有者。浏览器完成换码或桌面壳完成原生认证后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。
 
 1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。digest 使用 SHA-256，计算对象含 approvalId、任务/轮次/条目引用、原始请求、操作上下文、summary 和 expiresAt。用 RFC 8785 规范 JSON 的 UTF-8 字节，输出小写 hex。[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
-2. 通过所有者的私有通知或私有读取交付材料。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
-3. 服务在同一事务校验归属、pending、到期时间与 digest，原子记录决定。摘要不符只拒绝本次提交。如果上游回调或关联条目在等待时变更了实际操作，立即撤销旧请求，按新材料重新索取决定。相同 decisionId 和相同内容的重试返回现有结果，复用 ID 改内容或竞争提交第二份决定返回 conflict。只向原来的上游回调交付一次，接受仅限这次操作，拒绝权利扩展、永久规则和会话级授权。交付和崩溃可能相邻。状态不明即标 unknown 并结束受影响会话，不通过重发来探测执行结果。
+2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
+3. 服务在同一事务校验归属、pending、到期时间与 digest，原子记录决定。摘要不符只拒绝本次提交。征询的表单回答须通过该请求的模式校验，权限批准仅能返回此次列明的权限。对于仅能授予更广权限或需要额外信任流程的请求，本版返回拒绝或取消。如果上游回调或关联条目在等待时变更了实际操作，立即撤销旧请求，按新材料重新索取决定。相同 decisionId 和相同内容的重试返回现有结果，复用 ID 改内容或竞争提交第二份决定返回 conflict。只向原来的上游回调交付一次，接受仅限这次操作，拒绝权利扩展、永久规则和会话级授权。交付和崩溃可能相邻。状态不明即标 unknown 并结束受影响会话，不通过重发来探测执行结果。
 4. 审批有效期默认 10 分钟，可配置，给用户留出阅读时间并限制陈旧授权。客户端断线时解绑，上游继续等待。到期使旧 ID 失效，上游仍等待。所有者回来后用 list 查看，renew 仅对仍活着的原回调重新核对材料，签发新 ID、digest 和期限。取消、进程退出或上游撤回时撤销所有相关请求。与决定竞争时按事务顺序处理。没有定时批准、缺省批准或其他客户端接管的路径。
 
 ## 6. 适配器与版本边界
@@ -90,10 +91,21 @@ QO 在本机运行一个服务，网页和 Nemu 都向它派活。一个任务�
 | 版本与能力 | 启动前核对 CLI 版本。stdio 上 initialize / initialized 协商，记录版本和可用能力 |
 | 开线程、发轮次 | thread/start、turn/start。保留上游线程与轮次 ID |
 | 追加、打断 | turn/steer 带 expectedTurnId。turn/interrupt 指定线程和轮次 |
-| 回调与回复 | item/commandExecution/requestApproval、item/fileChange/requestApproval、item/permissions/requestApproval 映射到审批。item/tool/requestUserInput 映射到输入。以原 RPC id 响应 |
+| 回调与回复 | 按下表分类，使用上游原 RPC id 响应。每条 JSON 消息单独占一行，stdout 只作协议通道，stderr 和凭据载荷不进入公开事件 |
 | 条目、终态和用量 | 消费 item 变化、turn/completed、thread/tokenUsage/updated。上游撤回或解析失败时通知服务 |
 
-每次启动核对 [harness 锁](../../config/harness.lock.json)。未知或不匹配的版本在新建会话时失败。新适配器必须说明每种回调怎样决定、取消、失效。无法可靠表达一次性同意的回调只能拒绝或中止。本卡固定 Codex CLI 0.162.1。QO-02 在 `packages/adapter-codex` 用该版本的 `codex app-server generate-ts --out <目录>` 生成稳定协议并随适配器提交。升级须同时更新锁、生成物与样本。对照依据来自固定版本：[Codex 发布记录](https://github.com/openai/codex/releases/tag/rust-v0.162.1)、[协议类型](https://github.com/openai/codex/tree/rust-v0.162.1/codex-rs/app-server-protocol/schema/typescript)。
+固定版 [harness 锁](../../config/harness.lock.json) 指向 Codex 0.162.1。启动命令为 `codex app-server`，使用默认 stdio JSONL。升级时重新核验版本与线协议，未经校验的版本不能启动会话。生成器直接调用工作区固定版本的 `codex app-server generate-json-schema --out <临时目录>`，从稳定的 ServerRequest 导出 Rust 载荷类型和方法枚举。已提交的 schema、绑定、枚举都由 CI 重新生成比对。Rust 的穷尽匹配让新增的回调必须得到明确分类。协议材料由适配器保存原始 JSON，生成类型用于解释字段，保留计算摘要所需的原文。[固定版发布记录](https://github.com/openai/codex/releases/tag/rust-v0.162.1) · [回调原始 schema](../../packages/adapter-codex/schema/ServerRequest.json)
+
+| 固定版服务端请求 | 处理 |
+| --- | --- |
+| `item/commandExecution/requestApproval`、`item/fileChange/requestApproval` | 向所有者展示命令或变更，只允许针对本次操作的决定。 |
+| `item/permissions/requestApproval` | 展示原权限集，只能授予请求内能够限于本次的权限，或拒绝。 |
+| `mcpServer/elicitation/request` | 表单或 URL 征询交给任务所有者，按上游类型回复或取消。不能把打开 URL 或返回表单内容当作普通命令同意。 |
+| `execCommandApproval`、`applyPatchApproval` | 旧版命令和补丁回调，同样经过所有者审批。 |
+| `item/tool/requestUserInput` | 私有输入请求，按原始关联 ID 回答。 |
+| `item/tool/call`、`account/chatgptAuthTokens/refresh`、`attestation/generate` | 第一版未启用这些能力，显式拒绝。认证材料不进入审批流或日志。 |
+
+QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/schema)。同一组 JSON Schema 经 `pnpm generate` 生成 Rust 与 TS，生成物进库。1/2 先落握手作为可运行切片；2/2 依上面的方法表补齐全部对象、事件、运行时校验器、样例、假服务端与一致性测试。两平台用 `pnpm generate:check` 检查生成物，差异即失败。
 
 每家适配器用脱敏的离线录制覆盖正常轮次、交错的审批回调、拒绝、打断、用量、撤销和异常退出。保留双向消息顺序、关联 ID 关系、预期 QO 输出。测试无需账户或模型。2/2 的假服务端和外部一致性测试只验证 QO 的线协议，真实厂商的转换由各自适配器卡验证。
 
@@ -135,7 +147,13 @@ QO 在本机运行一个服务，网页和 Nemu 都向它派活。一个任务�
 
 拿不到实际账单金额、逐条命令的钱数或未回报的逐模型档位拆分。显示“拿不到”，和明确上报的 0 分开。账户级余额和限速窗口不能换算成会话消费。[计数字段](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server-protocol/schema/typescript/v2/TokenUsageBreakdown.ts) · [线程分组](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server-protocol/schema/typescript/v2/ThreadUsageBreakdownGroup.ts)
 
-## 10. 附录 · 第二家 harness 的调研
+## 10. 为什么选 Rust 和 Tauri，不选 Node 和 Electron
+
+**候选**　Node 服务加 Electron 可复用 TypeScript，并用同一版本 Chromium 渲染各平台。Rust 加 Tauri v2 需要同时维护 Cargo 与 pnpm，还要分别验证系统 WebView、Linux 图形库和平台托盘实现。
+
+**决定 / 理由**　服务独立管理子进程、凭据和长连接，和桌面原生代码共享 Rust 库及类型；Nemu 单独使用服务时无需前端运行时。Tauri 使用系统 WebView，桌面壳与浏览器复用 React 网页，安装包无需再携带 Electron 的 Chromium 和 Node。这里没有实测包体或内存，选择依据是分发与进程边界。托盘使用官方核心功能，通知和开机自启使用官方插件；图形依赖与两端生成器均计入构建成本。[Tauri 架构](https://v2.tauri.app/concept/architecture/) · [官方托盘](https://v2.tauri.app/learn/system-tray/) · [官方通知](https://v2.tauri.app/plugin/notification/) · [官方自启](https://v2.tauri.app/plugin/autostart/)
+
+## 11. 附录 · 第二家 harness 的调研
 
 **候选**　复用用户安装的 Gemini CLI 或 Antigravity CLI 的 ACP，或维护私有桥接。调研日期为 2026-11-27，仅核对官方文档、协议和许可说明。
 
