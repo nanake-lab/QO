@@ -1,0 +1,21 @@
+[
+  {
+    "text": "收到。 "
+  },
+  {
+    "text": "正在检查示例。"
+  },
+  {
+    "command": "echo demo",
+    "output": "demo\n"
+  },
+  {
+    "usage": {
+      "input": "8",
+      "output": "4"
+    }
+  },
+  {
+    "end": true
+  }
+]

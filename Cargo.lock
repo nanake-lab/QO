@@ -3299,6 +3299,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "qo-mock"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "qo-protocol",
+ "qo-server",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tungstenite",
+ "uuid",
+]
+
+[[package]]
 name = "qo-protocol"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,22 @@
+[package]
+name = "qo-mock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+qo-server = { version = "=0.1.0", path = "../server", default-features = false }
+qo-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid = { version = "=1.29.3", features = ["v4"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
+sha2 = "=0.10.9"
+subtle = "=2.6.1"
+tempfile = "=3.27.0"
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+tungstenite = "=0.29.0"

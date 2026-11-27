@@ -1,0 +1,10 @@
+[
+  {
+    "command": "echo approved",
+    "output": "approved\n",
+    "approval": true
+  },
+  {
+    "end": true
+  }
+]

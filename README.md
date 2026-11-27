@@ -14,7 +14,7 @@ cargo run --locked -p qo-desktop
 
 The desktop app starts or attaches to the service. Closing the window hides it. Use the tray to restore the window, open QO in your default browser, or enable launch at login. Starting the desktop app again focuses its existing window. Quitting the shell leaves the independent service running.
 
-For a browser-only session, start the service with `cargo run --locked -p qo-server`. While the service is running, choose **在浏览器中打开** in the tray or run **`qo open`**. Both request a fresh one-use link and open the system default browser. From a source checkout the equivalent command is `cargo run --locked -p qo-server --bin qo -- open`. To put the command on your Cargo bin path, run `cargo install --locked --path packages/server --bin qo` after building the web assets.
+For a browser-only session, start the service with `cargo run --locked -p qo-server`. While the service is running, choose **在浏览器中打开** in the tray or run **`qo open`**. Use `qo open --print` to print a fresh link for a headless session. The tray action and `qo open` both request a fresh one-use link and open the system default browser. From a source checkout the equivalent command is `cargo run --locked -p qo-server --bin qo -- open`. To put the command on your Cargo bin path, run `cargo install --locked --path packages/server --bin qo` after building the web assets.
 
 The default listener is `127.0.0.1:47261`. The configuration location and the port and login-link lifetime settings are in the [architecture decision](docs/adr/0001-architecture.md).
 
