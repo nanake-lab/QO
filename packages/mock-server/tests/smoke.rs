@@ -10,6 +10,10 @@ use std::{
 };
 use tungstenite::{Message, WebSocket, client::IntoClientRequest};
 
+fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
@@ -58,6 +62,20 @@ impl Client {
         serde_json::from_str(self.socket.read().unwrap().to_text().unwrap()).unwrap()
     }
     fn call(&mut self, name: &str, params: Value) -> Value {
+        let reply = self.rpc(name, params);
+        assert!(
+            qo_protocol::validate_output(name, &reply["result"]),
+            "{name}: {:?}",
+            reply["error"]
+        );
+        reply["result"].clone()
+    }
+    fn rejected(&mut self, name: &str, params: Value, reason: &str) {
+        let reply = self.rpc(name, params);
+        assert!(qo_protocol::validate_error(&reply["error"]));
+        assert_eq!(reply["error"]["data"]["reason"], reason, "{name}");
+    }
+    fn rpc(&mut self, name: &str, params: Value) -> Value {
         self.seq += 1;
         self.socket
             .send(Message::Text(
@@ -70,12 +88,7 @@ impl Client {
             let v = self.read();
             if v.get("id").is_some() {
                 assert_eq!(v["id"], self.seq);
-                assert!(
-                    qo_protocol::validate_output(name, &v["result"]),
-                    "{name} failed: {:?}",
-                    v["error"]
-                );
-                return v["result"].clone();
+                return v;
             }
             self.notifications.push_back(v);
         }
@@ -93,9 +106,13 @@ impl Client {
     }
 }
 fn start_mock(root: &Path) -> Process {
+    start_mock_with(root, &[])
+}
+fn start_mock_with(root: &Path, options: &[&str]) -> Process {
     let child = Command::new(env!("CARGO_BIN_EXE_qo-mock"))
         .args(["--port", "0", "--root"])
         .arg(root)
+        .args(options)
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -125,13 +142,14 @@ fn complete_approval_and_reconnect_replay() {
         "task.create",
         json!({"taskId":task,"name":"Smoke","ownerKey":"ab".repeat(32)}),
     );
-    let sid = owner.call("session.open", json!({"taskId":task}))["sessionId"].clone();
+    let sid = owner.call("session.open", json!({"taskId":task,"sessionId":new_id()}))["sessionId"]
+        .clone();
     let snapshot = observer.call("state.get", json!({}));
     let after = snapshot["cursor"].as_str().unwrap().parse::<u64>().unwrap();
     observer.call("events.subscribe", json!({"afterCursor":after.to_string()}));
     owner.call(
         "turn.start",
-        json!({"sessionId":sid,"input":"scenario:complete"}),
+        json!({"sessionId":sid,"turnId":new_id(),"input":"scenario:complete"}),
     );
     let mut cursor = after;
     let mut text = String::new();
@@ -171,7 +189,7 @@ fn complete_approval_and_reconnect_replay() {
     drop(observer);
     owner.call(
         "turn.start",
-        json!({"sessionId":sid,"input":"scenario:approval"}),
+        json!({"sessionId":sid,"turnId":new_id(),"input":"scenario:approval"}),
     );
     let n = owner.next();
     assert_eq!(n["method"], "approval.requested");
@@ -245,18 +263,28 @@ fn observers_follow_the_same_item_before_and_after_approval() {
         } else {
             json!({"path": "demo.txt", "diff": "+hello\n"})
         };
-        let session = owner.call("session.open", json!({"taskId":task}))["sessionId"].clone();
+        let session =
+            owner.call("session.open", json!({"taskId":task,"sessionId":new_id()}))["sessionId"]
+                .clone();
         let mut observer = Client::new(dir.path());
         let cursor = observer.call("state.get", json!({}))["cursor"].clone();
         observer.call("events.subscribe", json!({"afterCursor":cursor}));
         owner.call(
             "turn.start",
-            json!({"sessionId":session,"input":format!("scenario:{scenario}")}),
+            json!({"sessionId":session,"turnId":new_id(),"input":format!("scenario:{scenario}")}),
         );
         let notice = owner.next();
         assert_eq!(notice["method"], "approval.requested");
         let request = &notice["params"];
         assert!(request["raw"].is_object());
+        let typed = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(qo_protocol::approval_digest(&typed), request["digest"]);
+        let lookup = json!({"taskId": task, "approvalId": request["approvalId"]});
+        let pending = owner.call("approval.get", lookup.clone());
+        assert_eq!(pending["state"], "pending");
+        assert_eq!(pending["digest"], request["digest"]);
+        assert!(pending.get("decision").is_none());
+        observer.rejected("approval.get", lookup.clone(), "forbidden");
 
         let before = until_session_state(&mut observer, "waiting_approval");
         let starts: Vec<_> = before
@@ -282,12 +310,23 @@ fn observers_follow_the_same_item_before_and_after_approval() {
             owner.call("session.cancel", json!({"taskId":task,"sessionId":session}));
             "cancelled"
         } else {
-            owner.call("approval.decide", json!({
+            let reply = owner.call("approval.decide", json!({
                 "taskId": task, "approvalId": request["approvalId"], "digest": request["digest"],
                 "decisionId": uuid::Uuid::new_v4().to_string(), "choice": action
             }));
+            assert_eq!(reply["delivery"], "sent");
+            let status = owner.call("approval.get", lookup.clone());
+            assert_eq!(status["state"], "decided");
+            for key in ["decisionId", "decidedAt", "delivery", "choice"] {
+                assert_eq!(status["decision"][key], reply[key]);
+            }
+            assert!(status.get("raw").is_none() && status.get("summary").is_none());
+            assert!(status["decision"].get("answer").is_none());
             "idle"
         };
+        if action == "cancel" {
+            assert_eq!(owner.call("approval.get", lookup)["state"], "withdrawn");
+        }
         let after = until_session_state(&mut observer, terminal_session);
         let updates: Vec<_> = after
             .iter()
@@ -317,4 +356,147 @@ fn observers_follow_the_same_item_before_and_after_approval() {
         }
         assert_eq!(end["content"], content);
     }
+}
+
+#[test]
+fn retries_return_first_results_even_after_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let _server = start_mock(dir.path());
+    let mut owner = Client::new(dir.path());
+    let mut observer = Client::new(dir.path());
+    let task = new_id();
+    let session = new_id();
+    let turn = new_id();
+    let create = json!({"taskId":task,"name":"Retry","ownerKey":"ab".repeat(32)});
+    let open = json!({"taskId":task,"sessionId":session,"model":"initial"});
+    let start = json!({"sessionId":session,"turnId":turn,"input":"scenario:approval"});
+    let append =
+        json!({"sessionId":session,"turnId":turn,"appendId":new_id(),"input":"one addition"});
+    let created = owner.call("task.create", create.clone());
+    let opened = owner.call("session.open", open.clone());
+    assert_eq!(opened["harnessVersion"], env!("CARGO_PKG_VERSION"));
+    let started = owner.call("turn.start", start.clone());
+    let request = owner.next();
+    assert_eq!(request["method"], "approval.requested");
+    let appended = owner.call("turn.append", append.clone());
+    let writes = [
+        ("task.create", create, created, "name"),
+        ("session.open", open, opened, "model"),
+        ("turn.start", start, started, "input"),
+        ("turn.append", append, appended, "input"),
+    ];
+    let snapshot = owner.call("state.get", json!({}));
+    for (method, params, first, field) in &writes {
+        assert_eq!(owner.call(method, params.clone()), *first);
+        let mut changed = params.clone();
+        changed[*field] = json!("changed");
+        owner.rejected(method, changed, "conflict");
+        observer.rejected(method, params.clone(), "forbidden");
+    }
+    owner.rejected(
+        "session.open",
+        json!({"taskId":task,"sessionId":turn}),
+        "conflict",
+    );
+    assert_eq!(owner.call("state.get", json!({})), snapshot);
+
+    owner.call("session.cancel", json!({"taskId":task,"sessionId":session}));
+    owner.call("task.close", json!({"taskId":task}));
+    drop(owner);
+    let mut owner = Client::new(dir.path());
+    owner.call(
+        "task.attach",
+        json!({"taskId":task,"ownerKey":"ab".repeat(32)}),
+    );
+    let closed = owner.call("state.get", json!({}));
+    for (method, params, first, _) in writes {
+        assert_eq!(owner.call(method, params), first);
+    }
+    assert_eq!(owner.call("state.get", json!({})), closed);
+    let status = owner.call(
+        "approval.get",
+        json!({"taskId":task,"approvalId":request["params"]["approvalId"]}),
+    );
+    assert_eq!(status["state"], "withdrawn");
+}
+
+#[test]
+fn reroute_is_visible_on_the_original_subscription() {
+    let dir = tempfile::tempdir().unwrap();
+    let _server = start_mock(dir.path());
+    let mut c = Client::new(dir.path());
+    let task = new_id();
+    let session = new_id();
+    c.call(
+        "task.create",
+        json!({"taskId":task,"ownerKey":"ab".repeat(32),"name":"Route"}),
+    );
+    c.call(
+        "session.open",
+        json!({"taskId":task,"sessionId":session,"model":"initial"}),
+    );
+    let snapshot = c.call("state.get", json!({}));
+    let mut cursor: u64 = snapshot["cursor"].as_str().unwrap().parse().unwrap();
+    c.call(
+        "events.subscribe",
+        json!({"afterCursor":snapshot["cursor"]}),
+    );
+    c.rejected("events.subscribe", json!({"afterCursor":"0"}), "conflict");
+    c.call(
+        "turn.start",
+        json!({"sessionId":session,"turnId":new_id(),"input":"scenario:reroute"}),
+    );
+    let mut text_seen = false;
+    let mut rerouted = false;
+    for e in until_session_state(&mut c, "idle") {
+        cursor += 1;
+        assert_eq!(e["cursor"], cursor.to_string());
+        if e["kind"] == "item.delta" {
+            text_seen = true;
+        }
+        if e["kind"] == "session.changed"
+            && e["payload"]["state"] == "running"
+            && e["payload"]["model"] == "mock-rerouted"
+        {
+            assert!(text_seen);
+            rerouted = true;
+        }
+    }
+    assert!(rerouted);
+    let snapshot = c.call("state.get", json!({}));
+    assert_eq!(snapshot["sessions"][0]["model"], "mock-rerouted");
+    assert_eq!(snapshot["cursor"], cursor.to_string());
+}
+
+#[test]
+fn expired_approval_remains_queryable_after_renewal_and_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let _server = start_mock_with(dir.path(), &["--approval-ttl-seconds", "0"]);
+    let mut owner = Client::new(dir.path());
+    let task = new_id();
+    let session = new_id();
+    owner.call(
+        "task.create",
+        json!({"taskId":task,"name":"Expiry","ownerKey":"ab".repeat(32)}),
+    );
+    owner.call("session.open", json!({"taskId":task,"sessionId":session}));
+    owner.call(
+        "turn.start",
+        json!({"sessionId":session,"turnId":new_id(),"input":"scenario:approval"}),
+    );
+    let request = owner.next();
+    let lookup = json!({"taskId":task,"approvalId":request["params"]["approvalId"]});
+    let expired = owner.call("approval.get", lookup.clone());
+    assert_eq!(expired["state"], "expired");
+    assert!(expired.get("decision").is_none());
+    let renewed = owner.call("approval.renew", lookup.clone());
+    assert_ne!(renewed["approvalId"], expired["approvalId"]);
+    owner.call("session.cancel", json!({"taskId":task,"sessionId":session}));
+    owner.call("task.close", json!({"taskId":task}));
+    assert_eq!(owner.call("approval.get", lookup), expired);
+    let replacement = owner.call(
+        "approval.get",
+        json!({"taskId":task,"approvalId":renewed["approvalId"]}),
+    );
+    assert_eq!(replacement["state"], "withdrawn");
 }

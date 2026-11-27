@@ -71,6 +71,10 @@
     "events.subscribe": {
       "params": "EventsSubscribeParams",
       "result": "EventsSubscribeResult"
+    },
+    "approval.get": {
+      "params": "ApprovalGetParams",
+      "result": "ApprovalGetResult"
     }
   },
   "notifications": {

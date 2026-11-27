@@ -5,7 +5,7 @@ use qo_server::{Backend, Failure, Notifications, Peer, Role, RpcResult};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Mutex,
 };
 use uuid::Uuid;
@@ -51,11 +51,17 @@ pub struct Connection {
 pub struct Ownership {
     pub key_hash: Option<[u8; 32]>,
     pub holder: Option<u64>,
-    pub creation: [u8; 32],
+}
+pub struct Receipt {
+    pub method: Method,
+    pub params_digest: Digest,
+    pub result: Value,
 }
 pub struct State {
     pub tasks: BTreeMap<Id, Task>,
     pub owners: BTreeMap<Id, Ownership>,
+    pub receipts: BTreeMap<Id, Receipt>,
+    issued_ids: BTreeSet<Id>,
     pub sessions: BTreeMap<Id, Session>,
     pub turns: BTreeMap<Id, Turn>,
     pub items: BTreeMap<Id, Value>,
@@ -111,6 +117,8 @@ impl State {
         Self {
             tasks: Default::default(),
             owners: Default::default(),
+            receipts: Default::default(),
+            issued_ids: Default::default(),
             sessions: Default::default(),
             turns: Default::default(),
             items: Default::default(),
@@ -128,6 +136,20 @@ impl State {
             workspaces,
         }
     }
+    pub fn id_used(&self, id: &str) -> bool {
+        self.receipts.contains_key(id)
+            || self.issued_ids.contains(id)
+            || self.decisions.contains_key(id)
+    }
+    pub fn fresh_id(&mut self) -> Id {
+        loop {
+            let candidate = id();
+            if !self.id_used(&candidate) {
+                self.issued_ids.insert(candidate.clone());
+                return candidate;
+            }
+        }
+    }
     pub fn dispatch(&mut self, peer: Peer, method: Method, p: Value) -> RpcResult {
         if peer.role == Role::Desktop {
             return Err(ErrorReason::Forbidden.into());
@@ -135,7 +157,9 @@ impl State {
         self.expire();
         match method {
             Method::Initialize | Method::UiLoginLink => Err(ErrorReason::MethodNotFound.into()),
-            Method::TaskCreate => self.create(peer, decode(p)),
+            Method::TaskCreate | Method::SessionOpen | Method::TurnStart | Method::TurnAppend => {
+                self.write_once(peer, method, p)
+            }
             Method::TaskAttach => self.attach(peer, decode(p)),
             Method::TaskClose => self.close_task(peer, p["taskId"].as_str().unwrap()),
             Method::StateGet => Ok(json!({
@@ -146,15 +170,14 @@ impl State {
                 "usage": self.usage.values().collect::<Vec<_>>(),
                 "cursor": self.high.to_string()
             })),
-            Method::SessionOpen => self.open(peer, decode(p)),
             Method::SessionCancel | Method::SessionFinish => self.end_session(
                 peer,
                 p["taskId"].as_str().unwrap(),
                 p["sessionId"].as_str().unwrap(),
                 method == Method::SessionCancel,
             ),
-            Method::TurnStart => self.start(peer, decode(p)),
-            Method::TurnAppend | Method::TurnInterrupt => self.change_turn(peer, method, p),
+            Method::TurnInterrupt => self.interrupt(peer, p),
+            Method::ApprovalGet => self.approval_status(peer, decode(p)),
             Method::ApprovalList => self.list(peer, p["taskId"].as_str().unwrap()),
             Method::ApprovalRenew => self.renew(peer, decode(p)),
             Method::ApprovalDecide => self.decide(peer, decode(p)),
@@ -198,6 +221,9 @@ impl State {
         }
     }
     fn subscribe(&mut self, peer: Peer, cursor: &str) -> RpcResult {
+        if self.connections[&peer.id].subscribed {
+            return Err(ErrorReason::Conflict.into());
+        }
         let cursor = cursor
             .parse::<u64>()
             .map_err(|_| ErrorReason::InvalidParams)?;

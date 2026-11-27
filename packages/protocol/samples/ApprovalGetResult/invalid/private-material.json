@@ -1,0 +1,16 @@
+{
+  "approvalId": "00000000-0000-4000-8000-000000000001",
+  "taskId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "kind": "command_execution",
+  "state": "pending",
+  "expiresAt": "2026-11-27T08:00:00Z",
+  "digest": "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
+  "raw": {
+    "method": "item/commandExecution/requestApproval",
+    "params": {},
+    "context": {
+      "command": "echo demo"
+    }
+  }
+}

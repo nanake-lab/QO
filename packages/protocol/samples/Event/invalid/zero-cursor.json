@@ -11,6 +11,7 @@
     "state": "cancelled",
     "createdAt": "2026-11-27T08:00:00Z",
     "cancelledBy": "ui",
-    "endedAt": "2026-11-27T08:00:00Z"
+    "endedAt": "2026-11-27T08:00:00Z",
+    "harnessVersion": "0.162.1"
   }
 }

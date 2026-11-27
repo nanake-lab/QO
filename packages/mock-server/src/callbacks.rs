@@ -1,12 +1,11 @@
 use crate::{
     scenario::{Approval, Operation},
-    state::{State, id, now},
+    state::{State, now},
 };
 use chrono::{SecondsFormat, Utc};
 use qo_protocol::*;
 use qo_server::{Peer, RpcResult};
 use serde_json::json;
-use sha2::{Digest as _, Sha256};
 use std::time::Instant;
 
 impl State {
@@ -34,23 +33,14 @@ impl State {
                 format!("修改 {path}\n{diff}"),
             ),
         };
-        let aid = id();
+        let aid = self.fresh_id();
         let raw = RawRequest {
             method: method.into(),
             params: params.as_object().unwrap().clone(),
             context: None,
         };
         let expires = (Utc::now() + self.ttl).to_rfc3339_opts(SecondsFormat::Millis, true);
-        let mut material = json!({"approvalId":aid,"taskId":task,"sessionId":t.session_id,"turnId":t.turn_id,
-            "itemId":item,"kind":kind,"raw":raw,"summary":summary,"expiresAt":expires});
-        // The bundled scripts use only ASCII property names and string leaves in frozen material.
-        // Sorted keys and compact UTF-8 JSON therefore give RFC 8785 encoding for this subset.
-        material.sort_all_objects();
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&material).unwrap())
-        );
-        let request = ApprovalRequest {
+        let mut request = ApprovalRequest {
             approval_id: aid.clone(),
             task_id: task.clone(),
             session_id: t.session_id.clone(),
@@ -59,10 +49,11 @@ impl State {
             kind,
             raw,
             summary,
-            digest,
+            digest: String::new(),
             expires_at: expires,
             state: ApprovalState::Pending,
         };
+        request.digest = approval_digest(&request);
         if self.sessions[&t.session_id].state != SessionState::WaitingApproval {
             self.session_state(t, SessionState::WaitingApproval);
         }
@@ -71,11 +62,31 @@ impl State {
             aid.clone(),
             Approval {
                 request,
+                decision: None,
                 operation,
                 deadline: Instant::now() + self.ttl.to_std().unwrap(),
             },
         );
         aid
+    }
+    pub fn approval_status(&self, peer: Peer, p: ApprovalGetParams) -> RpcResult {
+        self.require_owner(peer, &p.task_id)?;
+        let a = self
+            .approvals
+            .get(&p.approval_id)
+            .filter(|a| a.request.task_id == p.task_id)
+            .ok_or(ErrorReason::NotFound)?;
+        let r = &a.request;
+        Ok(json!(ApprovalStatus {
+            approval_id: r.approval_id.clone(),
+            task_id: r.task_id.clone(),
+            session_id: r.session_id.clone(),
+            kind: r.kind,
+            state: r.state,
+            expires_at: r.expires_at.clone(),
+            digest: r.digest.clone(),
+            decision: a.decision.clone(),
+        }))
     }
     pub fn list(&self, peer: Peer, task: &str) -> RpcResult {
         self.require_owner(peer, task)?;
@@ -126,6 +137,9 @@ impl State {
                 Err(ErrorReason::Conflict.into())
             };
         }
+        if self.id_used(&p.decision_id) {
+            return Err(ErrorReason::Conflict.into());
+        }
         let a = self
             .approvals
             .get_mut(&p.approval_id)
@@ -146,15 +160,22 @@ impl State {
         let t = self.turns[a.request.turn_id.as_ref().unwrap()].clone();
         let item = a.request.item_id.clone().unwrap();
         let op = a.operation.clone();
-        let decision = json!(ApprovalDecision {
+        let decision = ApprovalDecideResult {
             decision_id: p.decision_id.clone(),
             approval_id: p.approval_id,
             digest: p.digest,
             choice: p.choice,
             answer: None,
             decided_at: now(),
-            delivery: Delivery::Sent
+            delivery: DecisionDelivery::Sent,
+        };
+        a.decision = Some(ApprovalDecisionStatus {
+            decision_id: decision.decision_id.clone(),
+            choice: decision.choice,
+            decided_at: decision.decided_at.clone(),
+            delivery: Delivery::Sent,
         });
+        let decision = json!(decision);
         a.request.state = ApprovalState::Decided;
         self.decisions
             .insert(p.decision_id, (submitted, decision.clone()));

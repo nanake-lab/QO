@@ -3,5 +3,6 @@
   "sessionId": "00000000-0000-4000-8000-000000000001",
   "harness": "codex",
   "state": "idle",
-  "createdAt": "2026-11-27T08:00:00Z"
+  "createdAt": "2026-11-27T08:00:00Z",
+  "harnessVersion": "0.162.1"
 }

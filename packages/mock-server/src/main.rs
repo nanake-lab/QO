@@ -3,8 +3,9 @@ mod scenario;
 mod state;
 mod tasks;
 
-use qo_protocol::{SessionOpenParams, TaskCreateParams, TurnStartParams};
+use qo_protocol::Method;
 use qo_server::{Assets, Peer, Role, Settings};
+use serde_json::json;
 use state::{Mock, State, id};
 use std::{
     env, fs, io,
@@ -80,39 +81,28 @@ fn seed(s: &mut State) {
         role: Role::External,
     };
     let task = id();
-    s.create(
+    let session = id();
+    let key = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    s.dispatch(
         peer,
-        TaskCreateParams {
-            task_id: task.clone(),
-            name: "外部客户端示例".into(),
-            group: None,
-            cwd: None,
-            forbidden_roots: None,
-            owner_key: Some(format!(
-                "{}{}",
-                uuid::Uuid::new_v4().simple(),
-                uuid::Uuid::new_v4().simple()
-            )),
-        },
+        Method::TaskCreate,
+        json!({"taskId":task, "name":"外部客户端示例","ownerKey":key}),
     )
     .unwrap();
-    let session = s
-        .open(
-            peer,
-            SessionOpenParams {
-                task_id: task.clone(),
-                model: Some("mock".into()),
-                service_tier: None,
-                reasoning_effort: None,
-            },
-        )
-        .unwrap();
-    s.start(
+    s.dispatch(
         peer,
-        TurnStartParams {
-            session_id: session["sessionId"].as_str().unwrap().into(),
-            input: "scenario:approval".into(),
-        },
+        Method::SessionOpen,
+        json!({"taskId":task,"sessionId":session,"model":"mock"}),
+    )
+    .unwrap();
+    s.dispatch(
+        peer,
+        Method::TurnStart,
+        json!({"sessionId":session,"turnId":id(),"input":"scenario:approval"}),
     )
     .unwrap();
     s.tick();
