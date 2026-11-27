@@ -1,0 +1,7 @@
+{
+  "code": -32002,
+  "message": "initialize_required",
+  "data": {
+    "reason": "initialize_required"
+  }
+}

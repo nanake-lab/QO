@@ -1,0 +1,8 @@
+{
+  "decisionId": "00000000-0000-4000-8000-000000000001",
+  "approvalId": "00000000-0000-4000-8000-000000000001",
+  "digest": "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
+  "choice": "allow_once",
+  "decidedAt": "2026-11-27T08:00:00Z",
+  "delivery": "recorded"
+}

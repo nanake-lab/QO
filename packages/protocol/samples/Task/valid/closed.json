@@ -1,0 +1,10 @@
+{
+  "taskId": "00000000-0000-4000-8000-000000000001",
+  "name": "示例任务",
+  "cwd": "/work/demo",
+  "forbiddenRoots": [],
+  "createdBy": "external",
+  "state": "closed",
+  "createdAt": "2026-11-27T08:00:00Z",
+  "closedAt": "2026-11-27T08:00:00Z"
+}

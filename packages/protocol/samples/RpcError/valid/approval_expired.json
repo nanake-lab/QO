@@ -1,0 +1,7 @@
+{
+  "code": -32008,
+  "message": "approval_expired",
+  "data": {
+    "reason": "approval_expired"
+  }
+}

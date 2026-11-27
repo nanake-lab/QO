@@ -1,0 +1,32 @@
+{
+  "requestId": "00000000-0000-4000-8000-000000000001",
+  "taskId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "turnId": "00000000-0000-4000-8000-000000000001",
+  "questions": [
+    {
+      "id": "mode",
+      "header": "工作方式",
+      "question": "使用哪种工作方式？",
+      "options": [
+        {
+          "label": "离线",
+          "description": "仅使用本地资料"
+        },
+        {
+          "label": "在线",
+          "description": "可以使用网络资料"
+        }
+      ],
+      "allowOther": true,
+      "secret": false
+    },
+    {
+      "id": "note",
+      "header": "备注",
+      "question": "请输入私有备注。",
+      "allowOther": false,
+      "secret": true
+    }
+  ]
+}

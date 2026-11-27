@@ -19,7 +19,10 @@ use axum::{
 };
 use discovery::{Endpoint, private_dir, publish, runtime_dir};
 use include_dir::{Dir, include_dir};
-use qo_protocol::{InitializeResult, LoginLinkResult, ProtocolVersion, initialize_params};
+use qo_protocol::{
+    ErrorReason, InitializeParams, InitializeResult, LoginLinkResult, Method, ProtocolVersion,
+    validate_params,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -177,7 +180,64 @@ struct Request {
     jsonrpc: String,
     id: Value,
     method: String,
-    params: Option<Value>,
+    #[serde(default = "empty_params")]
+    params: Value,
+}
+
+fn empty_params() -> Value {
+    json!({})
+}
+
+fn dispatch(
+    ready: &mut bool,
+    method_name: &str,
+    params: Value,
+    client: Client,
+    service: &Service,
+) -> Result<Value, ErrorReason> {
+    let method = Method::from_name(method_name);
+    if !*ready && method != Some(Method::Initialize) {
+        return Err(ErrorReason::InitializeRequired);
+    }
+    let method = method.ok_or(ErrorReason::MethodNotFound)?;
+    if !validate_params(method.name(), &params) {
+        return Err(ErrorReason::InvalidParams);
+    }
+    match method {
+        Method::Initialize if !*ready => {
+            let init: InitializeParams =
+                serde_json::from_value(params).map_err(|_| ErrorReason::InvalidParams)?;
+            if !init.versions.iter().any(|v| v == "qo.v1") {
+                return Err(ErrorReason::UnsupportedVersion);
+            }
+            *ready = true;
+            Ok(json!(InitializeResult {
+                version: ProtocolVersion::QoV1
+            }))
+        }
+        Method::UiLoginLink if client == Client::Desktop => service
+            .login_link()
+            .map(|url| json!(LoginLinkResult { url }))
+            .map_err(|_| ErrorReason::InternalError),
+        Method::UiLoginLink => Err(ErrorReason::Forbidden),
+        Method::Initialize
+        | Method::TaskCreate
+        | Method::TaskAttach
+        | Method::TaskClose
+        | Method::StateGet
+        | Method::SessionOpen
+        | Method::SessionFinish
+        | Method::SessionCancel
+        | Method::TurnStart
+        | Method::TurnAppend
+        | Method::TurnInterrupt
+        | Method::InputAnswer
+        | Method::ApprovalList
+        | Method::ApprovalRenew
+        | Method::ApprovalDecide
+        | Method::UsageGet
+        | Method::EventsSubscribe => Err(ErrorReason::MethodNotFound),
+    }
 }
 
 async fn rpc(mut socket: WebSocket, service: Service, client: Client) {
@@ -200,28 +260,11 @@ async fn rpc(mut socket: WebSocket, service: Service, client: Client) {
         if jsonrpc != "2.0" || !(id.is_string() || id.is_number()) {
             break;
         }
-        let result = match (ready, method.as_str()) {
-            (false, "initialize") => match initialize_params(params.unwrap_or(Value::Null)) {
-                Some(init) if init.versions.iter().any(|v| v == "qo.v1") => {
-                    ready = true;
-                    Ok(json!(InitializeResult {
-                        version: ProtocolVersion::QoV1
-                    }))
-                }
-                Some(_) => Err((-32001, "unsupported_version")),
-                None => Err((-32602, "invalid_params")),
-            },
-            (false, _) => Err((-32002, "initialize_required")),
-            (true, "ui.loginLink") if client == Client::Desktop => service
-                .login_link()
-                .map(|url| json!(LoginLinkResult { url }))
-                .map_err(|_| (-32603, "internal_error")),
-            (true, "ui.loginLink") => Err((-32003, "forbidden")),
-            (true, _) => Err((-32601, "method_not_found")),
-        };
+        let result = dispatch(&mut ready, &method, params, client, &service);
         let response = match result {
             Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
-            Err((code, reason)) => {
+            Err(reason) => {
+                let code = reason.code();
                 json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":reason,"data":{"reason":reason}}})
             }
         };
@@ -284,4 +327,50 @@ async fn serve() -> io::Result<()> {
         .fallback(get(assets))
         .with_state(service);
     axum::serve(listener, app).await
+}
+
+#[cfg(test)]
+mod rpc_tests {
+    use super::*;
+
+    #[test]
+    fn params_are_checked_before_signing_a_link_or_dispatching_a_task() {
+        let service = Service {
+            authority: String::from("127.0.0.1:47261"),
+            origin: String::from("http://127.0.0.1:47261"),
+            native: String::new(),
+            desktop: String::new(),
+            browser: Arc::new(Mutex::new(BrowserSessions::new(Duration::from_secs(60)))),
+        };
+        let mut ready = false;
+        let mut call = |name, params| dispatch(&mut ready, name, params, Client::Desktop, &service);
+        assert_eq!(
+            call("state.get", json!({})),
+            Err(ErrorReason::InitializeRequired)
+        );
+        call("initialize", json!({"versions":["qo.v1"]})).unwrap();
+        assert_eq!(
+            call("ui.loginLink", json!({"token":"extra"})),
+            Err(ErrorReason::InvalidParams)
+        );
+        assert_eq!(
+            call("ui.loginLink", Value::Null),
+            Err(ErrorReason::InvalidParams)
+        );
+        assert_eq!(
+            call("task.close", json!({"taskId":"bad"})),
+            Err(ErrorReason::InvalidParams)
+        );
+        assert_eq!(
+            call(
+                "task.close",
+                json!({"taskId":"00000000-0000-4000-8000-000000000001"})
+            ),
+            Err(ErrorReason::MethodNotFound)
+        );
+        assert!(qo_protocol::validate_output(
+            "ui.loginLink",
+            &call("ui.loginLink", json!({})).unwrap()
+        ));
+    }
 }

@@ -1,0 +1,9 @@
+{
+  "code": -32006,
+  "message": "cursor_expired",
+  "data": {
+    "reason": "cursor_expired",
+    "oldestCursor": "8",
+    "highWater": "32"
+  }
+}

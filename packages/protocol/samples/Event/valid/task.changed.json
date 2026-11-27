@@ -1,0 +1,16 @@
+{
+  "cursor": "1",
+  "at": "2026-11-27T08:00:00Z",
+  "kind": "task.changed",
+  "taskId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "payload": {
+    "taskId": "00000000-0000-4000-8000-000000000001",
+    "name": "示例任务",
+    "cwd": "/work/demo",
+    "forbiddenRoots": [],
+    "createdBy": "external",
+    "state": "open",
+    "createdAt": "2026-11-27T08:00:00Z"
+  }
+}

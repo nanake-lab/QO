@@ -1,0 +1,21 @@
+{
+  "cursor": "1",
+  "at": "2026-11-27T08:00:00Z",
+  "kind": "usage.updated",
+  "taskId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "payload": {
+    "sessionId": "00000000-0000-4000-8000-000000000001",
+    "model": "demo",
+    "source": "thread/tokenUsage/updated",
+    "counts": {
+      "totalTokens": "0",
+      "inputTokens": "0",
+      "cachedInputTokens": null,
+      "outputTokens": "0",
+      "reasoningOutputTokens": "0",
+      "cacheWriteInputTokens": null
+    },
+    "observedAt": "2026-11-27T08:00:00Z"
+  }
+}
