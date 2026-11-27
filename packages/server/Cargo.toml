@@ -1,0 +1,25 @@
+[package]
+name = "qo-server"
+default-run = "qo-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "=0.8.9", features = ["ws"] }
+getrandom = "=0.4.3"
+hex = "=0.4.3"
+include_dir = "=0.7.4"
+open = { version = "=5.4.5", features = ["shellexecute-on-windows"] }
+qo-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle = "=2.6.1"
+tempfile = "=3.27.0"
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "macros", "time"] }
+tungstenite = "=0.29.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Memory"] }

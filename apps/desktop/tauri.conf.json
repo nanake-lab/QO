@@ -1,0 +1,12 @@
+{
+  "productName": "QO",
+  "version": "0.1.0",
+  "identifier": "io.github.nanake-lab.qo",
+  "app": {
+    "windows": []
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.ico", "icons/icon.png"]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "codex": {
+    "version": "0.162.1",
+    "transport": "stdio",
+    "protocol": "app-server"
+  }
+}

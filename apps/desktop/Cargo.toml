@@ -1,0 +1,17 @@
+[package]
+name = "qo-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+qo-server = { version = "=0.1.0", path = "../../packages/server" }
+tauri = { version = "=2.12.7", features = ["tray-icon"] }
+tauri-plugin-single-instance = "=2.5.5"
+tauri-plugin-autostart = "=2.7.0"
+tauri-plugin-notification = "=2.8.1"
+
+[build-dependencies]
+tauri-build = "=2.7.6"
