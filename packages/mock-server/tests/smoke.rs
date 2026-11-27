@@ -92,12 +92,10 @@ impl Client {
         v
     }
 }
-#[test]
-fn complete_approval_and_reconnect_replay() {
-    let dir = tempfile::tempdir().unwrap();
+fn start_mock(root: &Path) -> Process {
     let child = Command::new(env!("CARGO_BIN_EXE_qo-mock"))
         .args(["--port", "0", "--root"])
-        .arg(dir.path())
+        .arg(root)
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -113,6 +111,13 @@ fn complete_approval_and_reconnect_replay() {
             .unwrap()
             .starts_with(&format!("{address}/#login="))
     );
+    server
+}
+
+#[test]
+fn complete_approval_and_reconnect_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let _server = start_mock(dir.path());
     let mut owner = Client::new(dir.path());
     let mut observer = Client::new(dir.path());
     let task = uuid::Uuid::new_v4().to_string();
@@ -200,4 +205,116 @@ fn complete_approval_and_reconnect_replay() {
         resumed.call("state.get", json!({}))["cursor"],
         cursor.to_string()
     );
+}
+
+/// Collect only public events, including the transition that ends this interval.
+fn until_session_state(observer: &mut Client, state: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    loop {
+        let message = observer.next();
+        assert_eq!(message["method"], "event");
+        let event = &message["params"];
+        events.push(event.clone());
+        if event["kind"] == "session.changed" && event["payload"]["state"] == state {
+            return events;
+        }
+    }
+}
+
+#[test]
+fn observers_follow_the_same_item_before_and_after_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let _server = start_mock(dir.path());
+    let mut owner = Client::new(dir.path());
+    let task = uuid::Uuid::new_v4().to_string();
+    owner.call(
+        "task.create",
+        json!({"taskId":task,"name":"Visibility","ownerKey":"ab".repeat(32)}),
+    );
+
+    for (scenario, action) in [
+        ("approval", "allow_once"),
+        ("approval", "deny"),
+        ("file-approval", "allow_once"),
+        ("file-approval", "deny"),
+        ("approval", "cancel"),
+    ] {
+        let command = scenario == "approval";
+        let mut content = if command {
+            json!({"command": "echo approved", "output": ""})
+        } else {
+            json!({"path": "demo.txt", "diff": "+hello\n"})
+        };
+        let session = owner.call("session.open", json!({"taskId":task}))["sessionId"].clone();
+        let mut observer = Client::new(dir.path());
+        let cursor = observer.call("state.get", json!({}))["cursor"].clone();
+        observer.call("events.subscribe", json!({"afterCursor":cursor}));
+        owner.call(
+            "turn.start",
+            json!({"sessionId":session,"input":format!("scenario:{scenario}")}),
+        );
+        let notice = owner.next();
+        assert_eq!(notice["method"], "approval.requested");
+        let request = &notice["params"];
+        assert!(request["raw"].is_object());
+
+        let before = until_session_state(&mut observer, "waiting_approval");
+        let starts: Vec<_> = before
+            .iter()
+            .filter(|e| e["kind"] == "item.changed")
+            .collect();
+        assert_eq!(starts.len(), 1);
+        let start = &starts[0]["payload"];
+        assert_eq!(start["itemId"], request["itemId"]);
+        assert_eq!(start["state"], "running");
+        assert_eq!(start["content"], content);
+        assert!(start.get("endedAt").is_none());
+        assert!(!before.iter().any(|e| e["kind"] == "item.delta"));
+        let snapshot = observer.call("state.get", json!({}));
+        assert!(snapshot["items"].as_array().unwrap().contains(start));
+        assert!(
+            !snapshot
+                .to_string()
+                .contains(request["digest"].as_str().unwrap())
+        );
+
+        let terminal_session = if action == "cancel" {
+            owner.call("session.cancel", json!({"taskId":task,"sessionId":session}));
+            "cancelled"
+        } else {
+            owner.call("approval.decide", json!({
+                "taskId": task, "approvalId": request["approvalId"], "digest": request["digest"],
+                "decisionId": uuid::Uuid::new_v4().to_string(), "choice": action
+            }));
+            "idle"
+        };
+        let after = until_session_state(&mut observer, terminal_session);
+        let updates: Vec<_> = after
+            .iter()
+            .filter(|e| e["kind"] == "item.changed")
+            .collect();
+        assert_eq!(updates.len(), 1);
+        let end = &updates[0]["payload"];
+        assert_eq!(end["itemId"], start["itemId"]);
+        assert_eq!(end["startedAt"], start["startedAt"]);
+        assert!(end["endedAt"].is_string());
+        let allowed = action == "allow_once";
+        assert_eq!(
+            end["state"],
+            if allowed { "completed" } else { "interrupted" }
+        );
+        let deltas: Vec<_> = after.iter().filter(|e| e["kind"] == "item.delta").collect();
+        if allowed && command {
+            assert_eq!(deltas.len(), 1);
+            assert_eq!(
+                deltas[0]["payload"],
+                json!({"itemId":start["itemId"],"delta":"approved\n"})
+            );
+            content["output"] = json!("approved\n");
+            content["exitCode"] = json!(0);
+        } else {
+            assert!(deltas.is_empty());
+        }
+        assert_eq!(end["content"], content);
+    }
 }

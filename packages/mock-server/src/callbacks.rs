@@ -158,7 +158,10 @@ impl State {
         a.request.state = ApprovalState::Decided;
         self.decisions
             .insert(p.decision_id, (submitted, decision.clone()));
-        self.operation_item(&t, &item, &op, Some(p.choice));
+        match p.choice {
+            Choice::AllowOnce => self.complete_operation(&t, &item, &op),
+            Choice::Deny => self.end_item(&t, &item, ItemState::Interrupted),
+        }
         self.resume(&t);
         Ok(decision)
     }

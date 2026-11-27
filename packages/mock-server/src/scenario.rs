@@ -1,4 +1,4 @@
-use crate::state::{State, id, now};
+use crate::state::{State, id, now, public_text};
 use qo_protocol::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -161,24 +161,16 @@ impl State {
                     output,
                     approval,
                 } => {
-                    let op = Operation::Command { command, output };
-                    if approval {
-                        p.waiting = Some(self.issue(&t, id(), op));
-                    } else {
-                        self.operation_item(&t, &id(), &op, None);
-                    }
+                    p.waiting =
+                        self.start_operation(&t, Operation::Command { command, output }, approval);
                 }
                 Step::File {
                     file,
                     diff,
                     approval,
                 } => {
-                    let op = Operation::File { path: file, diff };
-                    if approval {
-                        p.waiting = Some(self.issue(&t, id(), op));
-                    } else {
-                        self.operation_item(&t, &id(), &op, None);
-                    }
+                    p.waiting =
+                        self.start_operation(&t, Operation::File { path: file, diff }, approval);
                 }
                 Step::Input { questions } => {
                     let ids: HashSet<_> = questions.iter().map(|q| &q.id).collect();
@@ -243,53 +235,50 @@ impl State {
     }
     fn finish_text(&mut self, t: &Turn, p: &mut Playback, state: ItemState) {
         if let Some(item) = p.assistant.take() {
-            let mut v = self.items[&item].clone();
-            v["state"] = json!(state);
-            v["endedAt"] = json!(now());
-            self.save_item(t, v);
+            self.end_item(t, &item, state);
         }
     }
-    pub fn operation_item(&mut self, t: &Turn, item: &str, op: &Operation, choice: Option<Choice>) {
-        let denied = choice == Some(Choice::Deny);
-        // Only the owner receives the frozen command or diff from a private callback.
-        let (kind, content) = match op {
-            Operation::Command { command, .. } => {
-                let command = if choice.is_some() {
-                    "[withheld]"
-                } else {
-                    command
-                };
-                (
-                    "command_execution",
-                    json!({"command": command, "output": ""}),
-                )
-            }
-            Operation::File { path, diff } if choice.is_none() => {
-                ("file_change", json!({"path": path, "diff": diff}))
-            }
-            Operation::File { .. } => ("file_change", json!({"path": "[withheld]", "diff": ""})),
-        };
-        let mut record = json!({
-            "kind": kind, "itemId": item, "turnId": t.turn_id, "startedAt": now(),
-            "state": "running", "content": content
-        });
-        if let Operation::Command { output, .. } = op {
-            if denied {
-                record["content"]["output"] = json!("审批已拒绝");
-            } else {
-                self.save_item(t, record.clone());
-                self.item_event(t, "item.delta", json!({"itemId": item, "delta": output}));
-                record["content"]["output"] = json!(output);
-                record["content"]["exitCode"] = json!(0);
-            }
-        }
-        record["state"] = json!(if denied {
-            ItemState::Interrupted
-        } else {
-            ItemState::Completed
-        });
+    pub fn end_item(&mut self, t: &Turn, item: &str, state: ItemState) {
+        let mut record = self.items[item].clone();
+        record["state"] = json!(state);
         record["endedAt"] = json!(now());
         self.save_item(t, record);
+    }
+    fn start_operation(&mut self, t: &Turn, operation: Operation, approval: bool) -> Option<Id> {
+        let item = id();
+        let (kind, content) = match &operation {
+            Operation::Command { command, .. } => (
+                "command_execution",
+                json!({"command": public_text(command), "output": ""}),
+            ),
+            Operation::File { path, diff } => (
+                "file_change",
+                json!({"path": public_text(path), "diff": public_text(diff)}),
+            ),
+        };
+        self.save_item(
+            t,
+            json!({
+                "kind": kind, "itemId": item, "turnId": t.turn_id, "startedAt": now(),
+                "state": "running", "content": content
+            }),
+        );
+        if approval {
+            Some(self.issue(t, item, operation))
+        } else {
+            self.complete_operation(t, &item, &operation);
+            None
+        }
+    }
+    pub fn complete_operation(&mut self, t: &Turn, item: &str, operation: &Operation) {
+        if let Operation::Command { output, .. } = operation {
+            let output = public_text(output);
+            self.item_event(t, "item.delta", json!({"itemId": item, "delta": output}));
+            let content = &mut self.items.get_mut(item).expect("started item")["content"];
+            content["output"] = json!(output);
+            content["exitCode"] = json!(0);
+        }
+        self.end_item(t, item, ItemState::Completed);
     }
     pub fn session_state(&mut self, t: &Turn, state: SessionState) {
         let mut s = self.sessions[&t.session_id].clone();
@@ -317,6 +306,12 @@ impl State {
             if let Some(waiting) = p.waiting {
                 if let Some(a) = self.approvals.get_mut(&waiting) {
                     a.request.state = ApprovalState::Withdrawn;
+                    let item = a
+                        .request
+                        .item_id
+                        .clone()
+                        .expect("mock operation has an item");
+                    self.end_item(t, &item, ItemState::Interrupted);
                 }
                 if let Some(q) = self.inputs.remove(&waiting) {
                     self.withdrawn_inputs

@@ -16,6 +16,29 @@ pub fn id() -> String {
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
+// Service credentials and task keys have 64 hex digits. Never copy them into a projection.
+pub fn public_text(value: &str) -> String {
+    let mut out = String::new();
+    let mut start = 0;
+    for (i, c) in value
+        .char_indices()
+        .chain(std::iter::once((value.len(), ' ')))
+    {
+        if !c.is_ascii_hexdigit() {
+            if i - start >= 64 {
+                out.push_str("[redacted]");
+            } else {
+                out.push_str(&value[start..i]);
+            }
+            if i < value.len() {
+                out.push(c);
+            }
+            start = i + c.len_utf8();
+        }
+    }
+    out
+}
+
 pub fn decode<T: DeserializeOwned>(v: Value) -> T {
     serde_json::from_value(v).expect("input passed the protocol schema")
 }
