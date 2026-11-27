@@ -1,13 +1,13 @@
 {
-  "approvalId": "00000000-0000-4000-8000-000000000001",
+  "approvalId": "00000000-0000-4000-8000-000000000005",
   "taskId": "00000000-0000-4000-8000-000000000001",
-  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000002",
   "kind": "command_execution",
   "state": "decided",
   "expiresAt": "2026-11-27T08:00:00Z",
-  "digest": "abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
+  "digest": "632d9429e5a6398b7ba68c82545b6316d899d80c333bf9d210e8962eed801541",
   "decision": {
-    "decisionId": "00000000-0000-4000-8000-000000000001",
+    "decisionId": "00000000-0000-4000-8000-000000000006",
     "choice": "allow_once",
     "decidedAt": "2026-11-27T08:00:00Z",
     "delivery": "recorded"

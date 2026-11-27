@@ -1,7 +1,7 @@
 {
-  "approvalId": "00000000-0000-4000-8000-000000000001",
+  "approvalId": "00000000-0000-4000-8000-000000000005",
   "taskId": "00000000-0000-4000-8000-000000000001",
-  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000002",
   "kind": "file_change",
   "raw": {
     "method": "item/fileChange/requestApproval",
@@ -12,7 +12,7 @@
     }
   },
   "summary": "Update demo.txt",
-  "digest": "e78885dced20b0d053a168a73bd1e516f1844cdadc7767a15c78b694bc6bf022",
+  "digest": "81ed170109778cf972a8c788ed200dba185693f577a30b084dcac612b3b9ea73",
   "expiresAt": "2026-11-27T08:00:00Z",
   "state": "pending"
 }
