@@ -4,6 +4,7 @@ mod backend;
 mod client;
 mod connection;
 mod discovery;
+pub mod storage;
 
 pub use backend::{Backend, Failure, Notifications, Peer, Role, RpcResult};
 pub use client::{DesktopClient, open_browser};
@@ -13,9 +14,13 @@ pub use discovery::{Settings, runtime_dir};
 #[cfg(feature = "embedded-web")]
 pub fn run() -> std::io::Result<()> {
     use std::{io::IsTerminal, sync::Arc};
-    tokio::runtime::Runtime::new()?.block_on(serve_with(
-        Settings::load()?,
-        discovery::runtime_dir()?,
+    let settings = Settings::load()?;
+    let dir = discovery::runtime_dir()?;
+    let _instance = connection::lock_instance(&dir)?;
+    let _store = storage::Store::open(&settings).map_err(std::io::Error::other)?;
+    tokio::runtime::Runtime::new()?.block_on(connection::serve_locked(
+        settings,
+        dir,
         Assets::Embedded,
         Arc::new(backend::Bootstrap),
         |_, link| {

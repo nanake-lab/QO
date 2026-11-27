@@ -326,14 +326,8 @@ async fn rpc(mut socket: WebSocket, service: Service, client: Role) {
     }
 }
 
-pub async fn serve_with(
-    settings: Settings,
-    dir: PathBuf,
-    assets: Assets,
-    backend: Arc<dyn Backend>,
-    started: impl FnOnce(&str, &str),
-) -> io::Result<()> {
-    private_dir(&dir)?;
+pub(crate) fn lock_instance(dir: &Path) -> io::Result<std::fs::File> {
+    private_dir(dir)?;
     let instance = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -342,6 +336,27 @@ pub async fn serve_with(
     instance
         .try_lock()
         .map_err(|e| io::Error::other(format!("QO instance lock: {e}")))?;
+    Ok(instance)
+}
+
+pub async fn serve_with(
+    settings: Settings,
+    dir: PathBuf,
+    assets: Assets,
+    backend: Arc<dyn Backend>,
+    started: impl FnOnce(&str, &str),
+) -> io::Result<()> {
+    let _instance = lock_instance(&dir)?;
+    serve_locked(settings, dir, assets, backend, started).await
+}
+
+pub(crate) async fn serve_locked(
+    settings: Settings,
+    dir: PathBuf,
+    assets: Assets,
+    backend: Arc<dyn Backend>,
+    started: impl FnOnce(&str, &str),
+) -> io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", settings.port))
         .await
         .map_err(|e| io::Error::new(e.kind(), format!("bind 127.0.0.1:{}: {e}", settings.port)))?;
