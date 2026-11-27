@@ -1,0 +1,7 @@
+{
+  "code": -32007,
+  "message": "digest_mismatch",
+  "data": {
+    "reason": "digest_mismatch"
+  }
+}

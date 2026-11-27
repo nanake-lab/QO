@@ -1,0 +1,81 @@
+{
+  "methods": {
+    "initialize": {
+      "params": "InitializeParams",
+      "result": "InitializeResult"
+    },
+    "ui.loginLink": {
+      "params": "LoginLinkParams",
+      "result": "LoginLinkResult"
+    },
+    "task.create": {
+      "params": "TaskCreateParams",
+      "result": "TaskCreateResult"
+    },
+    "task.attach": {
+      "params": "TaskAttachParams",
+      "result": "TaskAttachResult"
+    },
+    "task.close": {
+      "params": "TaskCloseParams",
+      "result": "TaskCloseResult"
+    },
+    "state.get": {
+      "params": "StateGetParams",
+      "result": "StateGetResult"
+    },
+    "session.open": {
+      "params": "SessionOpenParams",
+      "result": "SessionOpenResult"
+    },
+    "session.finish": {
+      "params": "SessionFinishParams",
+      "result": "SessionFinishResult"
+    },
+    "session.cancel": {
+      "params": "SessionCancelParams",
+      "result": "SessionCancelResult"
+    },
+    "turn.start": {
+      "params": "TurnStartParams",
+      "result": "TurnStartResult"
+    },
+    "turn.append": {
+      "params": "TurnAppendParams",
+      "result": "TurnAppendResult"
+    },
+    "turn.interrupt": {
+      "params": "TurnInterruptParams",
+      "result": "TurnInterruptResult"
+    },
+    "input.answer": {
+      "params": "InputAnswerParams",
+      "result": "InputAnswerResult"
+    },
+    "approval.list": {
+      "params": "ApprovalListParams",
+      "result": "ApprovalListResult"
+    },
+    "approval.renew": {
+      "params": "ApprovalRenewParams",
+      "result": "ApprovalRenewResult"
+    },
+    "approval.decide": {
+      "params": "ApprovalDecideParams",
+      "result": "ApprovalDecideResult"
+    },
+    "usage.get": {
+      "params": "UsageGetParams",
+      "result": "UsageGetResult"
+    },
+    "events.subscribe": {
+      "params": "EventsSubscribeParams",
+      "result": "EventsSubscribeResult"
+    }
+  },
+  "notifications": {
+    "event": "Event",
+    "approval.requested": "ApprovalRequest",
+    "input.requested": "InputRequested"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "code": -32602,
+  "message": "invalid_params",
+  "data": {
+    "reason": "invalid_params"
+  }
+}

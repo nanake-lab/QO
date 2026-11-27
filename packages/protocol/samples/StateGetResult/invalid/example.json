@@ -1,0 +1,29 @@
+{
+  "tasks": [
+    {
+      "taskId": "00000000-0000-4000-8000-000000000001",
+      "name": "示例任务",
+      "cwd": "/work/demo",
+      "forbiddenRoots": [],
+      "createdBy": "external",
+      "state": "open",
+      "createdAt": "2026-11-27T08:00:00Z"
+    }
+  ],
+  "sessions": [
+    {
+      "taskId": "00000000-0000-4000-8000-000000000001",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "harness": "codex",
+      "state": "cancelled",
+      "createdAt": "2026-11-27T08:00:00Z",
+      "cancelledBy": "ui",
+      "endedAt": "2026-11-27T08:00:00Z"
+    }
+  ],
+  "turns": [],
+  "items": [],
+  "usage": [],
+  "cursor": "2",
+  "unexpected": true
+}

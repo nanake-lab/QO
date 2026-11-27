@@ -1,0 +1,7 @@
+{
+  "code": -32009,
+  "message": "request_withdrawn",
+  "data": {
+    "reason": "request_withdrawn"
+  }
+}

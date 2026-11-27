@@ -1,0 +1,7 @@
+{
+  "method": "item/commandExecution/requestApproval",
+  "params": {},
+  "context": {
+    "command": "echo demo"
+  }
+}

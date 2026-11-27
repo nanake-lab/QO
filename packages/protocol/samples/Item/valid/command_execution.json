@@ -1,0 +1,12 @@
+{
+  "itemId": "00000000-0000-4000-8000-000000000001",
+  "turnId": "00000000-0000-4000-8000-000000000001",
+  "state": "running",
+  "startedAt": "2026-11-27T08:00:00Z",
+  "kind": "command_execution",
+  "content": {
+    "command": "echo demo",
+    "output": "demo\n",
+    "exitCode": 0
+  }
+}

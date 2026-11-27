@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
   readFileSync,
-  readdirSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -10,6 +9,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { JSONSchemaInput, InputData, quicktype } from "quicktype-core";
+
+import { format } from "prettier";
+import { publicTypes, methodTable } from "./protocol.mjs";
 
 const check = process.argv.includes("--check");
 const read = (file) => readFileSync(file, "utf8").replaceAll("\r\n", "\n");
@@ -53,23 +55,25 @@ async function render(lang, schemas) {
 }
 
 const dir = "packages/protocol/schema";
-const publicSchemas = readdirSync(dir)
-  .filter((name) => name.endsWith(".json"))
-  .sort()
-  .map((name) => JSON.parse(read(join(dir, name))));
-if (
-  new Set(publicSchemas.map((schema) => schema.title)).size !==
-  publicSchemas.length
-) {
-  throw new Error("Public schema titles must be unique");
+const { definitions } = JSON.parse(read(join(dir, "protocol.json")));
+const catalog = JSON.parse(read(join(dir, "methods.json")));
+function rustfmt(code) {
+  return execFileSync("rustfmt", ["--edition", "2024", "--emit", "stdout"], {
+    input: code,
+    encoding: "utf8",
+  }).replaceAll("\r\n", "\n");
 }
 emit(
   "packages/protocol/generated/types.ts",
-  await render("typescript", publicSchemas),
+  await format(publicTypes(definitions, "ts"), { parser: "typescript" }),
 );
 emit(
   "packages/protocol/generated/types.rs",
-  await render("rust", publicSchemas),
+  rustfmt(publicTypes(definitions, "rs")),
+);
+emit(
+  "packages/protocol/generated/methods.rs",
+  rustfmt(methodTable(catalog, definitions)),
 );
 
 // Use the workspace-pinned executable even when the operator has another Codex on PATH.

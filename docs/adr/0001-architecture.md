@@ -19,7 +19,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 1. 服务只绑定 `127.0.0.1`，默认端口 **47261**，固定地址可供书签和桌面复用。可在第 8 节配置目录的 `settings.json` 设置 `port`；占用时报告错误并退出。启动先持有运行锁，用系统随机源生成独立的 32 字节原生凭据和桌面凭据，以临时文件原子替换 `endpoint.json` 和 `desktop.json`。两份记录只有端口和本次启动的令牌。Unix 目录 0700、记录 0600；Windows 在发布任何凭据前，为私有运行目录设置受保护、可继承的所有者 DACL。
 2. 外部原生客户端（含 Nemu）读取 `endpoint.json`。桌面壳和 `qo open` 使用服务为内置界面签发的本机令牌（`desktop.json`），在 WebSocket 升级时发送 Bearer 和精确的 Origin，再以 `ui.loginLink` 请求新链接。只有这个原生角色可以签发链接，服务令牌不进入网页。壳把链接交给主 WebView；网页、脚本及 CSP 都来自服务，并通过同源 `/rpc` 与服务通信。壳不打包第二份页面，也不转发业务 RPC。
 3. 登录链接形如 `http://127.0.0.1:<端口>/#login=<一次性码>`。服务启动时可在交互终端展示首个链接。关掉浏览器页面后，用户可以从托盘选「在浏览器中打开」或运行 `qo open`。两者都先申请新链接，再交给系统默认浏览器打开。新码取代旧码。默认有效 120 秒，供本机切换浏览器，可配置 `loginLinkSeconds`。一次性码是凭据进入 URL 的唯一例外，放在片段中以避开 HTTP 请求行。登录脚本先清除片段，再向同源 `POST /auth/exchange` 发送码；服务原子消费后设置 HttpOnly、SameSite=Strict、Path=/rpc 的 host-only 会话 cookie。升级时浏览器自动发送 cookie。服务重启使所有旧 cookie、链接与原生令牌失效。
-4. 静态入口核对实际 Host。换码和 WebSocket 升级同时核对唯一的 Host 和 Origin，精确匹配 `127.0.0.1:<端口>` 与 `http://127.0.0.1:<端口>`。原生客户端也带该 Origin。无效、缺失或多值均拒绝，不采信转发头。网页跨端口访问由 Origin 校验阻断，Host 校验阻断 DNS 重绑定。Cookie 和 SameSite 均不区分端口，同一主机其他端口在路径匹配时也可能收到 cookie。此设计针对外部网页，同一操作系统用户下已运行的恶意程序在威胁范围之外。
+4. 静态入口核对实际 Host。换码和 WebSocket 升级同时核对唯一的 Host 和 Origin，精确匹配 `127.0.0.1:<端口>` 与 `http://127.0.0.1:<端口>`。原生客户端也带该 Origin。无效、缺失或多值均拒绝，不采信转发头。网页跨端口访问由 Origin 校验阻断，Host 校验阻断 DNS 重绑定。Cookie 和 SameSite 均不区分端口，同一主机其他端口在路径匹配时也可能收到 cookie。此设计针对外部网页，同一操作系统用户下已运行的恶意程序在威胁范围之外。Linux 和 macOS 上，`qo open` 和托盘「在浏览器中打开」交给浏览器的一次性链接会短暂出现在进程参数里，其他本机用户可能看到并抢先使用。第一版接受此限制；后续可采用 Jupyter 的方式，打开权限为 0600 的跳转页文件。Windows 默认权限下，普通用户无法读取其他用户进程的参数。
 5. 在返回 101 前完成认证，把客户端角色绑定到连接。RPC 帧不重复带凭据。首条请求为 `initialize({versions:["qo.v1"]})`，成功返回选中的 `version`。无共同版本返回 `unsupported_version` 并断开。重连时重新认证和协商。本阶段已实现握手、换码及签发；任务和事件方法列在下节，供后续契约与服务使用。
 
 ## 3. 对象、状态与外部操作
@@ -30,18 +30,18 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 | 对象 | 字段 | 产生与状态变化 |
 | --- | --- | --- |
-| Task 任务 | taskId、name、group?、cwd、forbiddenRoots、state、createdAt | 创建方生成 taskId。服务登记内置界面归属，外部创建方另生成任务密钥。open 可开多个会话。显式关闭且所有会话已终止后成为 closed。 |
-| Session 会话 | sessionId、taskId、harness、model?、reasoningEffort?、serviceTier?、state、error?、createdAt | starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。 |
+| Task 任务 | taskId、name、group?、cwd、forbiddenRoots、createdBy、state、createdAt、closedAt? | 创建方生成 taskId。服务登记内置界面归属，外部创建方另生成任务密钥。open 可开多个会话。createdBy 为 ui 或 external。open → closed 仅由创建者显式关闭；还有非终态会话时返回 conflict。全部会话结束后任务仍为 open。关闭后保留历史与事件，session.open 返回 conflict，第一版不支持重开。 |
+| Session 会话 | sessionId、taskId、harness、model?、reasoningEffort?、serviceTier?、state、error?、createdAt、cancelledBy?、endedAt? | starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。此时必须记录 cancelledBy（外部创建者为 owner，内置界面为 ui）。session.changed 向所有观察者公布该值。 |
 | Turn 轮次 | turnId、sessionId、input、state、startedAt、endedAt? | 同一会话同时只有一个 active 轮次。running → completed / interrupted / failed。等待期间轮次仍为 running。追加指令属于同一轮。 |
 | Item 条目 | itemId、turnId、kind、state、content、startedAt、endedAt? | assistant_message 累积文本。command_execution 记录命令、输出和可用的退出码。file_change 记录路径与变更。running → completed / failed / interrupted。一次性条目可直接以终态产生。 |
 | ApprovalRequest 审批请求 | approvalId、taskId、sessionId、turnId?、itemId?、kind、raw、summary、digest、expiresAt、state | 新请求为 pending，只接受一份决定。可进入 decided、expired 或 withdrawn。续期发新 ID。私有载荷的可见性见第 5 节。 |
-| ApprovalDecision 审批决定 | decisionId、approvalId、digest、choice、decidedAt、delivery | 创建方为每次决定生成 decisionId，choice 为 allow_once 或 deny。征询类请求可带所有者明确填写且符合请求表单的回答。服务持久化后 delivery 为 recorded，交付后为 sent，无法确认则为 unknown，不重放授权。 |
-| Usage 用量 | sessionId、turnId?、model?、reasoningEffort?、serviceTier?、source、counts、observedAt | 只读快照，以来源、会话及其统计维度为键，同一键由新快照替换。缺失值为 null。观察样本的唯一 ID 为对应事件游标。 |
+| ApprovalDecision 审批决定 | decisionId、approvalId、digest、choice、answer?、decidedAt、delivery | 创建方为每次决定生成 decisionId，choice 为 allow_once 或 deny。征询类请求可带所有者明确填写且符合请求表单的回答。服务持久化后 delivery 为 recorded，交付后为 sent，无法确认则为 unknown，不重放授权。 |
+| Usage 用量 | sessionId、turnId?、model?、reasoningEffort?、serviceTier?、source、counts、observedAt | 只读快照，以来源、会话及其统计维度为键，同一键由新快照替换。缺失的计数为 null，已知的零写为十进制字符串 `"0"`。缺失的统计维度可省略。观察样本的唯一 ID 为对应事件游标。 |
 | Event 事件 | cursor、at、kind、taskId、sessionId?、turnId?、payload | cursor 是事件 ID，由数据库事务分配。公开日志只追加。事件写入后不修改。 |
 
 当同一轮有多个未决回调，展示优先级为等审批、等输入、在跑。逐一解决后重算状态。`turn.interrupt` 结束本轮，仍可开下一轮。`session.cancel` 终止整场会话及其在途请求。取消请求与完成回报并发时，以服务事务先提交的有效终态为准。
 
-**供 2/2 实现的方法表**　凭据只在升级握手出现。除握手外，读操作对完成握手的连接开放。修改已存在任务的操作都校验该连接的任务归属。
+**方法表**　服务令牌和会话 cookie 只在升级时出现。修改已存在任务的操作都校验该连接的任务归属，唯一例外是内置界面可以对任何未结束的会话调用 `session.cancel`。
 
 | 方法 | 主要入参 | 结果或作用 |
 | --- | --- | --- |
@@ -53,30 +53,35 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | session.open / session.finish / session.cancel | taskId。操作已有会话时带 sessionId，打开时可选 model、reasoningEffort、serviceTier | 返回会话。finish 只接受 idle |
 | turn.start / turn.append / turn.interrupt | sessionId。开始或追加带 input，追加或打断还须带 turnId | 返回对应轮次。旧 turnId 返回 conflict |
 | input.answer | sessionId、turnId、requestId、answer | 归还特定的待输入回调 |
-| approval.list / approval.renew / approval.decide | taskId。续期带 approvalId，决定带 approvalId、decisionId、digest、choice | 所有者取回未决及可续期请求、重取当前载荷或提交一次决定 |
+| approval.list / approval.renew / approval.decide | taskId。续期带 approvalId，决定带 approvalId、decisionId、digest、choice | 所有者取回未决及可续期请求、重取当前载荷或提交一次决定（征询的允许决定可另带 answer） |
 | usage.get | sessionId | 返回会话快照和有来源的档位分组 |
 | events.subscribe | afterCursor | 确认订阅，随后按序送出 event 通知 |
 
-公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、问题与轮次引用。成功 attach 后重送仍有效的私有回调。
+**方法权限**　外部连接的「自己的任务」指创建成功或凭任务密钥重新 attach 后由该连接控制的任务。内置界面重新连接后自动拥有界面建过的任务。桌面原生凭据仅用于发放登录链接，WebView 换码后按内置界面角色连接。
 
-**错误码**　HTTP 升级或换码的 Host、Origin、凭据校验失败均返回 403。静态页面允许普通导航省略 Origin，对错误或重复 Host 返回 403。连接升级后，客户端按 `error.code` 和 `error.data.reason` 处理 RPC 错误。
+| 方法 | 内置界面 | 外部原生客户端 | 桌面原生凭据 |
+| --- | --- | --- | --- |
+| initialize | 可以 | 可以 | 可以 |
+| ui.loginLink | 不可以 | 不可以 | 可以 |
+| state.get、usage.get、events.subscribe | 可以 | 可以 | 不可以 |
+| task.create | 可以，省略 ownerKey | 可以，必须带 ownerKey | 不可以 |
+| task.attach | 不可以 | 只限自己的任务，校验 ownerKey | 不可以 |
+| session.cancel | 可以，任何任务 | 只限自己的任务 | 不可以 |
+| task.close、session.open、session.finish | 只限自己的任务 | 只限自己的任务 | 不可以 |
+| turn.start、turn.append、turn.interrupt、input.answer | 只限自己的任务 | 只限自己的任务 | 不可以 |
+| approval.list、approval.renew、approval.decide | 只限自己的任务 | 只限自己的任务 | 不可以 |
 
-| code | reason | 触发条件 |
-| --- | --- | --- |
-| -32001 | unsupported_version | 握手没有共同协议版本，回复后断开 |
-| -32002 | initialize_required | 协商前发了其他方法，回复后断开 |
-| -32003 | forbidden | 认证角色无权调用，例如网页或外部原生客户端请求签发登录链接 |
-| -32601 | method_not_found | 协商后调用未知方法 |
-| -32602 | invalid_params | 握手参数不符合 schema |
-| -32603 | internal_error | 服务签发登录链接失败 |
+「全部取消并关闭」先逐个取消，再由创建者关闭。每一步独立产生事件。「隐藏已关闭」和「只看我建的」只筛选客户端已经收到的任务，后者依据 createdBy。
 
-后续业务方法还需区分 `unauthorized`、`not_found`、`conflict`、`cursor_expired`、`digest_mismatch` 和 `approval_expired`。这些原因与数值的对应关系在 2/2 的协议 schema 中定义。
+公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。每个增量都写进公开事件日志，占一个游标；重连时按顺序补发，才能拼回完整输出。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、问题与轮次引用。成功 attach 后重送仍有效的私有回调。
+
+错误码、reason、附带字段与触发条件见 [协议 schema 的 RpcError](../../packages/protocol/schema/protocol.json#/definitions/RpcError)。`unauthorized` 不进入 RPC，认证失败在 HTTP 升级前返回 403。
 
 ## 4. 持久事件与断线补发
 
 **候选**　短时内存队列适合实时推送，重启就失去历史。数据库顺序日志同时支持恢复与现在的订阅者。
 
-**决定 / 理由**　公开事件采用连续递增的全局 64 位正整数游标，线上以十进制字符串表示，起点为 `"0"`。唯一写者在同一事务里更新投影、递增持久高水位并追加事件。回滚连同游标一起撤销。所有已认证客户端看到同一条公共序列，私有回调不占用公共游标。审批状态只公开“等审批”等会话状态，原始请求与决定保留在所有者通道。
+**决定 / 理由**　公开事件采用连续递增的全局 64 位正整数游标，线上以十进制字符串表示，空日志的高水位为 `"0"`，第一条事件游标为 `"1"`。唯一写者在同一事务里更新投影、递增持久高水位并追加事件。回滚连同游标一起撤销。所有已认证客户端看到同一条公共序列，私有回调不占用公共游标。审批状态只公开“等审批”等会话状态，原始请求与决定保留在所有者通道。
 
 `afterCursor=C` 表示客户端已应用 C，只接收大于 C 的事件。订阅者先登记实时队列并取已提交高水位 H，补发 (C,H]，再按序发送队列中大于 H 的事件。回放期间以一致的读取视图隔离裁剪。客户端在应用事件后才保存游标，收到已处理游标时去重。慢连接超出服务发送缓冲可断开，再用最后已应用的游标接续。
 
@@ -86,7 +91,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 **候选**　由界面代批、以可自报的 clientId 辨认所有者，或由任务创建方持有独立随机密钥。前两种无法隔开网页和 Nemu 的决定权。
 
-**决定 / 理由**　服务只为内置界面登记固定所有者。浏览器或桌面 WebView 完成换码后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。
+**决定 / 理由**　服务只为内置界面登记固定所有者。浏览器或桌面 WebView 完成换码后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，线上编码为 64 位小写十六进制，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。内置界面取消外部会话时，依第 5.4 条撤销该会话全部未决审批和输入。之后提交审批决定或回答输入均返回 `request_withdrawn`，与摘要不符和审批超时分别处理。
 
 1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。digest 使用 SHA-256，计算对象含 approvalId、任务/轮次/条目引用、原始请求、操作上下文、summary 和 expiresAt。用 RFC 8785 规范 JSON 的 UTF-8 字节，输出小写 hex。[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
 2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
@@ -118,9 +123,9 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | `item/tool/requestUserInput` | 私有输入请求，按原始关联 ID 回答。 |
 | `item/tool/call`、`account/chatgptAuthTokens/refresh`、`attestation/generate` | 第一版未启用这些能力，显式拒绝。认证材料不进入审批流或日志。 |
 
-QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/schema)。同一组 JSON Schema 经 `pnpm generate` 生成 Rust 与 TS，生成物进库。1/2 先落握手作为可运行切片；2/2 依上面的方法表补齐全部对象、事件、运行时校验器、样例、假服务端与一致性测试。两平台用 `pnpm generate:check` 检查生成物，差异即失败。
+QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/schema)。同一组 JSON Schema 经 `pnpm generate` 生成 Rust 与 TS，生成物进库。2/4 定义全部对象、事件、校验器和样例，3/4 实现假服务端，4/4 运行一致性测试。两平台用 `pnpm generate:check` 检查生成物，差异即失败。
 
-每家适配器用脱敏的离线录制覆盖正常轮次、交错的审批回调、拒绝、打断、用量、撤销和异常退出。保留双向消息顺序、关联 ID 关系、预期 QO 输出。测试无需账户或模型。2/2 的假服务端和外部一致性测试只验证 QO 的线协议，真实厂商的转换由各自适配器卡验证。
+每家适配器用脱敏的离线录制覆盖正常轮次、交错的审批回调、拒绝、打断、用量、撤销和异常退出。保留双向消息顺序、关联 ID 关系、预期 QO 输出。测试无需账户或模型。假服务端和外部一致性测试验证 QO 的线协议，真实厂商的转换由各自适配器卡验证。TypeScript 只生成静态类型。网页只连接本机服务，4/4 的一致性测试用 Rust 出参校验器逐条检查回复和通知，网页无需额外的运行时校验库。
 
 ## 7. Codex 隔离与工作目录
 

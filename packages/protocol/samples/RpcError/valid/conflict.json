@@ -1,0 +1,7 @@
+{
+  "code": -32005,
+  "message": "conflict",
+  "data": {
+    "reason": "conflict"
+  }
+}

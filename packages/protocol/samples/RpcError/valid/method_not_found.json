@@ -1,0 +1,7 @@
+{
+  "code": -32601,
+  "message": "method_not_found",
+  "data": {
+    "reason": "method_not_found"
+  }
+}

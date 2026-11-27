@@ -1,0 +1,7 @@
+{
+  "code": -32003,
+  "message": "forbidden",
+  "data": {
+    "reason": "forbidden"
+  }
+}

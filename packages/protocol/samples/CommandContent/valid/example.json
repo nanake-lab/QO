@@ -1,0 +1,5 @@
+{
+  "command": "echo demo",
+  "output": "demo\n",
+  "exitCode": 0
+}
