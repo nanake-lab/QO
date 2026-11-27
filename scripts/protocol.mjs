@@ -23,6 +23,8 @@ function wireType(schema, lang) {
     return lang === "ts" ? inner + " | null" : `Option<${inner}>`;
   }
   switch (schema.type) {
+    case "boolean":
+      return lang === "ts" ? "boolean" : "bool";
     case "integer":
       return lang === "ts" ? "number" : "i64";
     case "string":
@@ -39,6 +41,15 @@ function wireType(schema, lang) {
         return lang === "ts"
           ? "Record<string, unknown>"
           : "serde_json::Map<String, serde_json::Value>";
+      if (
+        typeof schema.additionalProperties === "object" &&
+        schema.additionalProperties !== null
+      ) {
+        const value = wireType(schema.additionalProperties, lang);
+        return lang === "ts"
+          ? `Record<string, ${value}>`
+          : `std::collections::BTreeMap<String, ${value}>`;
+      }
   }
   throw new Error("Unsupported wire type: " + JSON.stringify(schema));
 }

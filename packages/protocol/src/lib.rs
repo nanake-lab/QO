@@ -61,6 +61,22 @@ pub fn validate_output(name: &str, value: &Value) -> bool {
         .is_some_and(|schema| named_valid(schema, value))
 }
 
+impl InputRequested {
+    /// Check answer keys against this pending request after the caller resolves its route and owner.
+    pub fn validate_answer_ids(
+        &self,
+        answers: &std::collections::BTreeMap<String, InputAnswer>,
+    ) -> Result<(), ErrorReason> {
+        let ids: std::collections::HashSet<_> =
+            self.questions.iter().map(|q| q.id.as_str()).collect();
+        if answers.keys().all(|id| ids.contains(id.as_str())) {
+            Ok(())
+        } else {
+            Err(ErrorReason::InvalidParams)
+        }
+    }
+}
+
 pub fn validate_error(value: &Value) -> bool {
     named_valid("RpcError", value)
 }

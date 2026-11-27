@@ -323,11 +323,15 @@ export interface TurnInterruptParams {
 
 export type TurnInterruptResult = Turn;
 
+export interface InputAnswer {
+  answers: Array<string>;
+}
+
 export interface InputAnswerParams {
   sessionId: Id;
   turnId: Id;
   requestId: Id;
-  answer: string;
+  answers: Record<string, InputAnswer>;
 }
 
 export type InputAnswerResult = Record<string, never>;
@@ -372,12 +376,26 @@ export interface EventsSubscribeParams {
 
 export type EventsSubscribeResult = Record<string, never>;
 
+export interface InputOption {
+  label: string;
+  description: string;
+}
+
+export interface InputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options?: Array<InputOption>;
+  allowOther: boolean;
+  secret: boolean;
+}
+
 export interface InputRequested {
   requestId: Id;
   taskId: Id;
   sessionId: Id;
   turnId: Id;
-  question: string;
+  questions: [InputQuestion, ...InputQuestion[]];
 }
 
 export type RpcError =

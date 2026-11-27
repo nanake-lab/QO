@@ -870,6 +870,19 @@
     "TurnInterruptResult": {
       "$ref": "#/definitions/Turn"
     },
+    "InputAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["answers"]
+    },
     "InputAnswerParams": {
       "type": "object",
       "additionalProperties": false,
@@ -883,11 +896,14 @@
         "requestId": {
           "$ref": "#/definitions/Id"
         },
-        "answer": {
-          "type": "string"
+        "answers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/InputAnswer"
+          }
         }
       },
-      "required": ["sessionId", "turnId", "requestId", "answer"]
+      "required": ["sessionId", "turnId", "requestId", "answers"]
     },
     "InputAnswerResult": {
       "type": "object",
@@ -1017,6 +1033,47 @@
       "additionalProperties": false,
       "properties": {}
     },
+    "InputOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": ["label", "description"]
+    },
+    "InputQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InputOption"
+          }
+        },
+        "allowOther": {
+          "type": "boolean"
+        },
+        "secret": {
+          "type": "boolean"
+        }
+      },
+      "required": ["id", "header", "question", "allowOther", "secret"]
+    },
     "InputRequested": {
       "type": "object",
       "additionalProperties": false,
@@ -1033,12 +1090,15 @@
         "turnId": {
           "$ref": "#/definitions/Id"
         },
-        "question": {
-          "type": "string",
-          "minLength": 1
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/InputQuestion"
+          }
         }
       },
-      "required": ["requestId", "taskId", "sessionId", "turnId", "question"]
+      "required": ["requestId", "taskId", "sessionId", "turnId", "questions"]
     },
     "RpcError": {
       "type": "object",
@@ -1224,7 +1284,7 @@
           }
         },
         {
-          "description": "参数违反 schema、订阅游标超过高水位或表单回答未通过校验。",
+          "description": "参数违反 schema、订阅游标超过高水位或表单回答未通过校验，或输入回答引用了该请求中不存在的问题 ID。",
           "properties": {
             "code": {
               "const": -32602

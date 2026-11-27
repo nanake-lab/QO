@@ -84,3 +84,25 @@ fn unknown_names_fail_closed_and_types_match_the_catalog() {
         initialize_params(serde_json::json!({"versions": ["qo.v1"], "token": "extra"})).is_none()
     );
 }
+
+#[test]
+fn structured_answers_reference_questions_in_the_pending_request() {
+    let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+    let notice = read(&samples.join("InputRequested/valid/example.json"));
+    let request: InputRequested = serde_json::from_value(notice.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), notice);
+    assert!(request.questions.iter().any(|q| q.secret));
+    for (path, expected) in [
+        ("InputAnswerParams/valid/example.json", Ok(())),
+        (
+            "InputAnswerParams/invalid-context/unknown-question.json",
+            Err(ErrorReason::InvalidParams),
+        ),
+    ] {
+        let raw = read(&samples.join(path));
+        assert!(validate_params("input.answer", &raw));
+        let reply: InputAnswerParams = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&reply).unwrap(), raw);
+        assert_eq!(request.validate_answer_ids(&reply.answers), expected);
+    }
+}

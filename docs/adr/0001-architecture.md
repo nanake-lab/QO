@@ -52,7 +52,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | state.get | 无 | 公共任务、会话、轮次、条目、用量的同一事务快照及其 cursor |
 | session.open / session.finish / session.cancel | taskId。操作已有会话时带 sessionId，打开时可选 model、reasoningEffort、serviceTier | 返回会话。finish 只接受 idle |
 | turn.start / turn.append / turn.interrupt | sessionId。开始或追加带 input，追加或打断还须带 turnId | 返回对应轮次。旧 turnId 返回 conflict |
-| input.answer | sessionId、turnId、requestId、answer | 归还特定的待输入回调 |
+| input.answer | sessionId、turnId、requestId、answers | 按问题 ID 回答对应的待输入请求。每个值的形状为 `{"answers":["…"]}` |
 | approval.list / approval.renew / approval.decide | taskId。续期带 approvalId，决定带 approvalId、decisionId、digest、choice | 所有者取回未决及可续期请求、重取当前载荷或提交一次决定（征询的允许决定可另带 answer） |
 | usage.get | sessionId | 返回会话快照和有来源的档位分组 |
 | events.subscribe | afterCursor | 确认订阅，随后按序送出 event 通知 |
@@ -73,7 +73,11 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 「全部取消并关闭」先逐个取消，再由创建者关闭。每一步独立产生事件。「隐藏已关闭」和「只看我建的」只筛选客户端已经收到的任务，后者依据 createdBy。
 
-公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。每个增量都写进公开事件日志，占一个游标；重连时按顺序补发，才能拼回完整输出。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、问题与轮次引用。成功 attach 后重送仍有效的私有回调。
+公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。每个增量都写进公开事件日志，占一个游标；重连时按顺序补发，才能拼回完整输出。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、任务、会话和轮次引用，以及按原顺序排列的非空 questions。成功 attach 后重送仍有效的私有回调。
+
+每道输入题保留上游的字符串 id、header、question 和可选的 options（每项含 label、description）。Codex 的 isOther、isSecret 分别映射为必填的 allowOther、secret，省略时取上游默认值 false。上游 options 为 null 或缺省时，QO 省略该字段。secret 为 true 的题目，其回答只交给发起回调的 harness，不写入公开事件、日志或诊断。
+
+`input.answer` 用题目原有的 id 作键，去掉 QO 路由字段后的 `{"answers":{"mode":{"answers":["离线"]}}}` 即固定版 Codex 的 `ToolRequestUserInputResponse`。服务在核对所有者和未决请求后，按该请求的题目 ID 检查整个回答。任何一个键不存在即返回 `invalid_params`，整份回答不转交。例如，本次只问了 mode 和 note，回答里出现 missing 就属于此错误。
 
 错误码、reason、附带字段与触发条件见 [协议 schema 的 RpcError](../../packages/protocol/schema/protocol.json#/definitions/RpcError)。`unauthorized` 不进入 RPC，认证失败在 HTTP 升级前返回 403。
 
@@ -94,7 +98,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 **决定 / 理由**　服务只为内置界面登记固定所有者。浏览器或桌面 WebView 完成换码后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，线上编码为 64 位小写十六进制，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。内置界面取消外部会话时，依第 5.4 条撤销该会话全部未决审批和输入。之后提交审批决定或回答输入均返回 `request_withdrawn`，与摘要不符和审批超时分别处理。
 
 1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。digest 使用 SHA-256，计算对象含 approvalId、任务/轮次/条目引用、原始请求、操作上下文、summary 和 expiresAt。用 RFC 8785 规范 JSON 的 UTF-8 字节，输出小写 hex。[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
-2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
+2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。处理输入回调时按原请求中各题的 secret 标记识别敏感回答。敏感回答只在私有回调中交付，不进入公开事件、日志或诊断。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
 3. 服务在同一事务校验归属、pending、到期时间与 digest，原子记录决定。摘要不符只拒绝本次提交。征询的表单回答须通过该请求的模式校验，权限批准仅能返回此次列明的权限。对于仅能授予更广权限或需要额外信任流程的请求，本版返回拒绝或取消。如果上游回调或关联条目在等待时变更了实际操作，立即撤销旧请求，按新材料重新索取决定。相同 decisionId 和相同内容的重试返回现有结果，复用 ID 改内容或竞争提交第二份决定返回 conflict。只向原来的上游回调交付一次，接受仅限这次操作，拒绝权利扩展、永久规则和会话级授权。交付和崩溃可能相邻。状态不明即标 unknown 并结束受影响会话，不通过重发来探测执行结果。
 4. 审批有效期默认 10 分钟，可配置，给用户留出阅读时间并限制陈旧授权。客户端断线时解绑，上游继续等待。到期使旧 ID 失效，上游仍等待。所有者回来后用 list 查看，renew 仅对仍活着的原回调重新核对材料，签发新 ID、digest 和期限。取消、进程退出或上游撤回时撤销所有相关请求。与决定竞争时按事务顺序处理。没有定时批准、缺省批准或其他客户端接管的路径。
 

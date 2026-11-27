@@ -508,11 +508,17 @@ pub type TurnInterruptResult = Turn;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputAnswer {
+    pub answers: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputAnswerParams {
     pub session_id: Id,
     pub turn_id: Id,
     pub request_id: Id,
-    pub answer: String,
+    pub answers: std::collections::BTreeMap<String, InputAnswer>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -578,12 +584,31 @@ pub struct EventsSubscribeResult {}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<InputOption>>,
+    pub allow_other: bool,
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputRequested {
     pub request_id: Id,
     pub task_id: Id,
     pub session_id: Id,
     pub turn_id: Id,
-    pub question: String,
+    pub questions: Vec<InputQuestion>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
