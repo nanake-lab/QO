@@ -1,0 +1,10 @@
+[
+  {
+    "file": "demo.txt",
+    "diff": "+hello\n",
+    "approval": true
+  },
+  {
+    "end": true
+  }
+]

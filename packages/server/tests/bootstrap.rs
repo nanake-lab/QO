@@ -163,7 +163,10 @@ fn browser_and_native_login_across_restart() {
     let port = configure(root);
     let origin = format!("http://127.0.0.1:{port}");
     let server = start(root, port);
-    let link = isolated(root, SERVER).arg("login-link").output().unwrap();
+    let link = isolated(root, env!("CARGO_BIN_EXE_qo"))
+        .args(["open", "--print"])
+        .output()
+        .unwrap();
     assert!(link.status.success(), "native bootstrap failed");
     let link = std::str::from_utf8(&link.stdout).unwrap().trim();
     let code = link.strip_prefix(&format!("{origin}/#login=")).unwrap();
@@ -219,7 +222,10 @@ fn host_and_origin_guards_return_http_403() {
     let other = format!("example.invalid:{port}");
     let record: Value = serde_json::from_slice(&fs::read(endpoint(root)).unwrap()).unwrap();
     let bearer = format!("Bearer {}", record["token"].as_str().unwrap());
-    let issued = isolated(root, SERVER).arg("login-link").output().unwrap();
+    let issued = isolated(root, env!("CARGO_BIN_EXE_qo"))
+        .args(["open", "--print"])
+        .output()
+        .unwrap();
     assert!(issued.status.success());
     let link = std::str::from_utf8(&issued.stdout).unwrap().trim();
     let code = link.strip_prefix(&format!("{origin}/#login=")).unwrap();

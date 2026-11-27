@@ -1,0 +1,32 @@
+[
+  {
+    "questions": [
+      {
+        "id": "format",
+        "header": "输出格式",
+        "question": "使用哪种格式？",
+        "options": [
+          {
+            "label": "文本",
+            "description": "普通文本"
+          }
+        ],
+        "allowOther": true,
+        "secret": false
+      },
+      {
+        "id": "note",
+        "header": "备注",
+        "question": "请输入私有备注。",
+        "allowOther": true,
+        "secret": true
+      }
+    ]
+  },
+  {
+    "text": "已收到回答。"
+  },
+  {
+    "end": true
+  }
+]
