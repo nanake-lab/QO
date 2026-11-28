@@ -68,6 +68,7 @@ impl Playback {
             .unwrap_or("")
             .strip_prefix("scenario:");
         let source = match name {
+            Some("approval-twice") => include_str!("../scenarios/approval-twice.json"),
             Some("approval") => include_str!("../scenarios/approval.json"),
             Some("file-approval") => include_str!("../scenarios/file-approval.json"),
             Some("input") => include_str!("../scenarios/input.json"),

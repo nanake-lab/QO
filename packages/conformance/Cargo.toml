@@ -1,0 +1,14 @@
+[package]
+name = "qo-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+qo-protocol.workspace = true
+serde_json.workspace = true
+tempfile = "=3.27.0"
+tungstenite = "=0.29.0"
+uuid = { version = "=1.29.3", features = ["v4"] }

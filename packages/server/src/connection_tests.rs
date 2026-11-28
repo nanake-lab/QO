@@ -47,7 +47,7 @@ fn params_are_checked_before_signing_a_link_or_dispatching_a_task() {
             "task.close",
             json!({"taskId":"00000000-0000-4000-8000-000000000001"})
         ),
-        Err(ErrorReason::MethodNotFound.into())
+        Err(ErrorReason::Forbidden.into())
     );
     assert!(qo_protocol::validate_output(
         "ui.loginLink",

@@ -3319,6 +3319,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "qo-conformance"
+version = "0.1.0"
+dependencies = [
+ "qo-protocol",
+ "serde_json",
+ "tempfile",
+ "tungstenite",
+ "uuid",
+]
+
+[[package]]
 name = "qo-desktop"
 version = "0.1.0"
 dependencies = [
@@ -3335,6 +3346,7 @@ name = "qo-mock"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "qo-conformance",
  "qo-protocol",
  "qo-server",
  "serde",
@@ -3367,6 +3379,7 @@ dependencies = [
  "hex",
  "include_dir",
  "open",
+ "qo-conformance",
  "qo-protocol",
  "rusqlite",
  "serde",
