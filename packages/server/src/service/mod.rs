@@ -8,7 +8,7 @@ use qo_protocol::*;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io,
+    io::{self, Write},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -95,7 +95,6 @@ struct Live {
     holders: BTreeMap<Id, u64>,
     processes: BTreeMap<Id, Box<dyn Harness>>,
     pending: BTreeMap<Id, Pending>,
-    stopped: bool,
 }
 impl Live {
     fn owns(&self, db: &View<'_>, peer: Peer, task: &str) -> Result<()> {
@@ -114,16 +113,25 @@ impl Live {
         self.pending.retain(|_, p| p.session() != sid);
         self.processes.remove(sid);
     }
-    fn stop(&mut self) {
-        self.stopped = true;
+    fn stop(&mut self, operation: &str, error: storage::Error) -> ! {
         for process in self.processes.values_mut() {
             process.terminate();
         }
         self.processes.clear();
-        self.pending.clear();
-        for c in self.clients.values() {
-            c.out.overflow.send_replace(true);
-        }
+        // SQLite messages can contain application data. Report the code, never the raw message.
+        let cause = match error {
+            storage::Error::Database(e) => match e.sqlite_error() {
+                Some(code) => format!("SQLite {:?} ({})", code.code, code.extended_code),
+                None => "SQLite operation failed".to_owned(),
+            },
+            storage::Error::Io(e) => format!("I/O {:?}", e.kind()),
+            other => other.to_string(),
+        };
+        let _ = writeln!(
+            io::stderr().lock(),
+            "QO stopped during {operation}: {cause}"
+        );
+        std::process::exit(1);
     }
 }
 
@@ -169,13 +177,9 @@ impl ServiceBackend {
                     }
                     let Some(backend) = weak.upgrade() else { break };
                     let mut live = backend.live.lock().unwrap();
-                    if live.stopped {
-                        break;
-                    }
                     if std::time::Instant::now() >= next_expiry_check {
-                        if backend.expire(&mut live).is_err() {
-                            live.stop();
-                            break;
+                        if let Err(error) = backend.expire(&mut live) {
+                            live.stop("approval expiry", error);
                         }
                         next_expiry_check = std::time::Instant::now() + interval;
                     }
@@ -188,14 +192,13 @@ impl ServiceBackend {
                             storage::Error::InvalidEvent
                             | storage::Error::Rejected(_)
                             | storage::Error::Conflict => {
-                                if backend
-                                    .fail(&mut live, &sid, "invalid_harness_event")
-                                    .is_err()
+                                if let Err(error) =
+                                    backend.fail(&mut live, &sid, "invalid_harness_event")
                                 {
-                                    live.stop();
+                                    live.stop("recording a failed harness session", error);
                                 }
                             }
-                            _ => live.stop(),
+                            error => live.stop("handling a harness event", error),
                         }
                     }
                 }
@@ -261,9 +264,6 @@ impl ServiceBackend {
         })
     }
     fn dispatch(&self, l: &mut Live, peer: Peer, m: Method, p: Value) -> Result<Value> {
-        if l.stopped {
-            return Err(ErrorReason::InternalError.into());
-        }
         if peer.role == Role::Desktop {
             return Err(ErrorReason::Forbidden.into());
         }
@@ -305,10 +305,6 @@ impl ServiceBackend {
 impl Backend for ServiceBackend {
     fn connected(&self, p: Peer, out: Notifications) {
         let mut l = self.live.lock().unwrap();
-        if l.stopped {
-            out.overflow.send_replace(true);
-            return;
-        }
         l.clients.insert(
             p.id,
             Client {
@@ -317,8 +313,10 @@ impl Backend for ServiceBackend {
                 subscribed: false,
             },
         );
-        if p.role == Role::Browser && self.send_pending(&l, p, None).is_err() {
-            l.stop();
+        if p.role == Role::Browser
+            && let Err(error) = self.send_pending(&l, p, None)
+        {
+            l.stop("restoring pending callbacks", error);
         }
     }
     fn disconnected(&self, p: Peer) {
@@ -335,10 +333,7 @@ impl Backend for ServiceBackend {
             storage::Error::CursorExpired { oldest, high } => {
                 Failure::CursorExpired { oldest, high }
             }
-            _ => {
-                l.stop();
-                ErrorReason::InternalError.into()
-            }
+            error => l.stop(m.name(), error),
         })
     }
 }

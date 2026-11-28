@@ -17,6 +17,7 @@ pub struct Options {
     pub approval_seconds: Option<u64>,
     pub retain_events: Option<usize>,
     pub pause_delivery: bool,
+    pub capture_stderr: bool,
 }
 
 /// Configure a child and identify its discovery directory. Restart uses the same root and port.
@@ -154,6 +155,9 @@ impl<'a> Instance<'a> {
     pub fn restart(&mut self) {
         drop(self.process.take());
         let mut cmd = self.target.command(self.root(), self.port, self.options);
+        if self.options.capture_stderr {
+            cmd.stderr(Stdio::piped());
+        }
         let mut child = Process(cmd.stdout(Stdio::null()).spawn().unwrap());
         // Connect does not prove publication; obtain an HTTP response from the running router.
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -181,6 +185,22 @@ impl<'a> Instance<'a> {
         self.native = read("endpoint.json");
         self.desktop = read("desktop.json");
         self.process = Some(child);
+    }
+    pub(crate) fn wait_for_failure(&mut self) -> String {
+        let child = &mut self.process.as_mut().unwrap().0;
+        // Observe the child's own exit before restart(), which would otherwise kill it.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.code().is_some_and(|code| code != 0), "{status}");
+                return std::io::read_to_string(child.stderr.take().unwrap()).unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "service stayed alive after the storage failure"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     }
     pub fn isolated_command(&self, binary: &str) -> Command {
         isolated(self.root(), binary)

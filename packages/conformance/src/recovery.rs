@@ -1,9 +1,64 @@
 use crate::{Instance, Options, Target, cursor, decision, id, start};
 use serde_json::json;
 use std::{
+    net::TcpStream,
+    path::Path,
     thread,
     time::{Duration, Instant},
 };
+
+/// Trip the target's storage fault while a turn is waiting for its owner.
+pub fn storage_failure(target: &dyn Target, inject: impl FnOnce(&Path)) -> String {
+    let mut service = Instance::start(
+        target,
+        Options {
+            capture_stderr: true,
+            ..Default::default()
+        },
+    );
+    let mut owner = service.ui();
+    let task = id();
+    let session = id();
+    owner.call(
+        "task.create",
+        json!({"taskId":task,"name":"Storage failure"}),
+    );
+    owner.call("session.open", json!({"taskId":task,"sessionId":session}));
+    let turn = start(&mut owner, &session, "approval");
+    let pending = owner.notice("approval.requested");
+    let before = owner.state();
+
+    inject(service.root());
+    owner.send_request(
+        "turn.append",
+        json!({"sessionId":session,"turnId":turn,"appendId":id(),"input":"uncommitted"}),
+    );
+    let diagnostic = service.wait_for_failure();
+    assert!(TcpStream::connect(("127.0.0.1", service.port)).is_err());
+    drop(owner);
+
+    service.restart();
+    let mut owner = service.ui();
+    let after = owner.state();
+    assert_eq!(after["sessions"][0]["state"], "failed");
+    assert_eq!(after["sessions"][0]["error"], "harness_lost");
+    assert_eq!(after["turns"][0]["state"], "failed");
+    assert_eq!(after["turns"][0]["input"], before["turns"][0]["input"]);
+    assert_eq!(after["items"][0]["state"], "failed");
+    let status = owner.call(
+        "approval.get",
+        json!({"taskId":task,"approvalId":pending["approvalId"]}),
+    );
+    assert_eq!(status["state"], "withdrawn");
+    owner.subscribe(cursor(&before));
+    for (index, table) in ["items", "turns", "sessions"].iter().enumerate() {
+        let event = owner.notice("event");
+        assert_eq!(cursor(&event), cursor(&before) + index as u64 + 1);
+        assert_eq!(event["payload"], after[*table][0]);
+    }
+    assert_eq!(cursor(&after), cursor(&before) + 3);
+    diagnostic
+}
 
 /// Kill the OS process with a decision committed and its harness write still blocked.
 pub fn restart(target: &dyn Target) {

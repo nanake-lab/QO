@@ -68,3 +68,27 @@ mod approvals {
 fn restart_reconciliation() {
     qo_conformance::recovery::restart(&TARGET);
 }
+
+#[cfg(feature = "test-harness")]
+#[test]
+fn storage_error_exits_process_and_reconciles_on_restart() {
+    let diagnostic = qo_conformance::recovery::storage_failure(&TARGET, |root| {
+        let state = root.join(if cfg!(windows) {
+            "QO/state"
+        } else {
+            "state/qo"
+        });
+        let db = rusqlite::Connection::open(state.join("qo.sqlite3")).unwrap();
+        // Fail the first append at event insertion, after its projection changed inside the transaction.
+        db.execute_batch(
+            "CREATE TRIGGER fail_append BEFORE INSERT ON events
+            WHEN NEW.kind = 'turn.changed' AND NEW.body ->> '$.payload.state' = 'running'
+            BEGIN SELECT RAISE(ABORT, 'private-fault-marker'); END;",
+        )
+        .unwrap();
+    });
+    assert!(
+        diagnostic.contains("turn.append") && diagnostic.contains("SQLite ConstraintViolation")
+    );
+    assert!(!diagnostic.contains("private-fault-marker"));
+}
