@@ -245,6 +245,7 @@ fn dispatch(
             .map_err(|_| ErrorReason::InternalError.into()),
         Method::UiLoginLink => Err(ErrorReason::Forbidden.into()),
         Method::Initialize => Err(ErrorReason::MethodNotFound.into()),
+        _ if peer.role == Role::Desktop => Err(ErrorReason::Forbidden.into()),
         business => service.backend.call(peer, business, params),
     }
 }

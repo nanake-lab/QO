@@ -11,7 +11,7 @@ use std::{
     env, fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tempfile::TempDir;
 
@@ -20,6 +20,7 @@ struct Options {
     root: Option<PathBuf>,
     web: PathBuf,
     ttl: u64,
+    login_ttl: u64,
     retain: Option<usize>,
     seed: bool,
 }
@@ -34,6 +35,7 @@ impl Options {
             root: None,
             web: "apps/web/dist".into(),
             ttl: 600,
+            login_ttl: Settings::default().login_link_seconds,
             retain: None,
             seed: false,
         };
@@ -48,6 +50,18 @@ impl Options {
                         .to_str()
                         .and_then(|s| s.parse().ok())
                         .ok_or_else(|| invalid("invalid port"))?
+                }
+                Some("--login-link-seconds") => {
+                    o.login_ttl = val
+                        .to_str()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|n| {
+                            *n > 0
+                                && Instant::now()
+                                    .checked_add(Duration::from_secs(*n))
+                                    .is_some()
+                        })
+                        .ok_or_else(|| invalid("invalid login link TTL"))?;
                 }
                 Some("--approval-ttl-seconds") => {
                     o.ttl = val
@@ -65,7 +79,7 @@ impl Options {
                 Some("--seed") if val == "external" => o.seed = true,
                 _ => {
                     return Err(invalid(
-                        "usage: qo-mock [--port N] [--root DIR] [--web DIR] [--approval-ttl-seconds N] [--retain-events N] [--seed external]",
+                        "usage: qo-mock [--port N] [--root DIR] [--web DIR] [--login-link-seconds N] [--approval-ttl-seconds N] [--retain-events N] [--seed external]",
                     ));
                 }
             }
@@ -179,6 +193,7 @@ async fn main() -> io::Result<()> {
     qo_server::serve_with(
         Settings {
             port: o.port,
+            login_link_seconds: o.login_ttl,
             ..Settings::default()
         },
         root.join("run"),
