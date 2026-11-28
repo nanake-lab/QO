@@ -72,6 +72,9 @@ pub(crate) fn workspaces() -> io::Result<PathBuf> {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Settings {
+    pub output_batch_bytes: usize,
+    pub codex_path: PathBuf,
+    pub harness_finish_seconds: u64,
     pub port: u16,
     pub login_link_seconds: u64,
     pub event_retention_days: u64,
@@ -84,6 +87,9 @@ impl Default for Settings {
         // A stable unprivileged port keeps browser bookmarks usable across restarts.
         // Two minutes leaves time to switch to the browser and bounds a lost link's lifetime.
         Self {
+            output_batch_bytes: 256 * 1024, // Limit consecutive deltas per transaction so other events get a turn.
+            codex_path: "codex".into(),
+            harness_finish_seconds: 5, // Let CLI flush its thread before forcing tree shutdown.
             port: 47261,
             login_link_seconds: 120,
             event_retention_days: 7, // Cover clients offline over a weekend.
@@ -94,6 +100,14 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn codex_factory(&self, state: &Path) -> qo_adapter_codex::CodexFactory {
+        qo_adapter_codex::CodexFactory::new(
+            self.codex_path.clone(),
+            state,
+            Duration::from_secs(self.harness_finish_seconds),
+        )
+    }
+
     pub fn load() -> io::Result<Self> {
         let settings: Self = match fs::read(paths()?.1.join("settings.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes)?,

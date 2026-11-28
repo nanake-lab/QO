@@ -10,6 +10,7 @@ publish = false
 test-harness = ["dep:chrono", "dep:serde", "dep:uuid"]
 
 [dependencies]
+regex = "=1.13.2"
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"], optional = true }
 serde = { workspace = true, optional = true }
 uuid = { version = "=1.29.3", features = ["v4"], optional = true }

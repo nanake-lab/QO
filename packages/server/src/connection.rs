@@ -212,7 +212,7 @@ fn empty_params() -> Value {
     json!({})
 }
 
-fn dispatch(
+async fn dispatch(
     ready: &mut bool,
     method_name: &str,
     params: Value,
@@ -246,7 +246,12 @@ fn dispatch(
         Method::UiLoginLink => Err(ErrorReason::Forbidden.into()),
         Method::Initialize => Err(ErrorReason::MethodNotFound.into()),
         _ if peer.role == Role::Desktop => Err(ErrorReason::Forbidden.into()),
-        business => service.backend.call(peer, business, params),
+        business => {
+            let backend = service.backend.clone();
+            tokio::task::spawn_blocking(move || backend.call(peer, business, params))
+                .await
+                .map_err(|_| ErrorReason::InternalError)?
+        }
     }
 }
 
@@ -299,7 +304,7 @@ async fn rpc(mut socket: WebSocket, service: Service, client: Role) {
             break;
         }
         let was_ready = ready;
-        let result = dispatch(&mut ready, &method, params, peer, &service);
+        let result = dispatch(&mut ready, &method, params, peer, &service).await;
         if ready && !was_ready {
             service.backend.connected(peer, out.clone());
         }
@@ -392,6 +397,8 @@ pub(crate) async fn serve_locked(
         port,
         token: secret()?,
     };
+    backend.remember_secret(&endpoint.token);
+    backend.remember_secret(&desktop.token);
     let service = Service {
         authority: format!("127.0.0.1:{port}"),
         assets,

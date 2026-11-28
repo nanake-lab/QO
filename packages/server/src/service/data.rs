@@ -38,6 +38,10 @@ impl Change<'_, '_> {
     pub fn session(&mut self, s: &Session) -> Result<Value> {
         let v = json!(s);
         self.tx.put_projection(Projection::Session, &v)?;
+        if s.state != SessionState::Starting {
+            // Finalize the original open reply exactly once, including cancellation and crash recovery.
+            self.tx.db.execute("UPDATE receipts SET reply=? WHERE id=? AND method='session.open' AND reply ->> '$.state'='starting'", params![v, s.session_id])?;
+        }
         self.event(
             "session.changed",
             &s.task_id,

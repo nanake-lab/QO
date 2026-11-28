@@ -27,6 +27,7 @@ hex = "=0.4.3"
 include_dir = { version = "=0.7.4", optional = true }
 open = { version = "=5.4.5", features = ["shellexecute-on-windows"] }
 qo-protocol.workspace = true
+qo-adapter-codex = { version = "=0.1.0", path = "../adapter-codex" }
 qo-harness = { version = "=0.1.0", path = "harness" }
 rusqlite = { version = "=0.43.0", features = ["bundled", "fallible_uint", "serde_json"] }
 serde.workspace = true

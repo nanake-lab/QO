@@ -31,7 +31,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | 对象 | 字段 | 产生与状态变化 |
 | --- | --- | --- |
 | Task 任务 | taskId、name、group?、cwd、forbiddenRoots、createdBy、state、createdAt、closedAt? | 创建方生成 taskId。服务登记内置界面归属，外部创建方另生成任务密钥。open 可开多个会话。createdBy 为 ui 或 external。open → closed 仅由创建者显式关闭；还有非终态会话时返回 conflict。全部会话结束后任务仍为 open。关闭后保留历史与事件，session.open 返回 conflict，第一版不支持重开。 |
-| Session 会话 | sessionId、taskId、harness、harnessVersion、model?、reasoningEffort?、serviceTier?、state、error?、createdAt、cancelledBy?、endedAt? | 客户端生成 sessionId。harnessVersion 是启动前核对的 CLI 版本（mock 为 crate 版本）。model、reasoningEffort、serviceTier 取上游在 thread/start 返回的生效值，未报告的字段省略。上游报告 model/rerouted 时更新 Session 并发 session.changed。starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。此时必须记录 cancelledBy（外部创建者为 owner，内置界面为 ui）。session.changed 向所有观察者公布该值。 |
+| Session 会话 | sessionId、taskId、harness、harnessVersion、model?、reasoningEffort?、serviceTier?、state、error?、createdAt、cancelledBy?、endedAt? | 客户端生成 sessionId。harnessVersion 在 starting 时为 unavailable，握手成功后为核对过的 CLI 版本（mock 为 crate 版本）。model、reasoningEffort、serviceTier 取上游在 thread/start 返回的生效值，未报告的字段省略。上游报告 model/rerouted 时更新 Session 并发 session.changed。starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。此时必须记录 cancelledBy（外部创建者为 owner，内置界面为 ui）。session.changed 向所有观察者公布该值。 |
 | Turn 轮次 | turnId、sessionId、input、state、startedAt、endedAt? | 客户端生成 turnId，每次追加另生成 appendId。同一会话同时只有一个 active 轮次。running → completed / interrupted / failed。等待期间轮次仍为 running。追加指令属于同一轮。 |
 | Item 条目 | itemId、turnId、kind、state、content、startedAt、endedAt? | assistant_message 累积文本。command_execution 记录命令、输出和可用的退出码。file_change 记录路径与变更。running → completed / failed / interrupted。一次性条目可直接以终态产生。 |
 | ApprovalRequest 审批请求 | approvalId、taskId、sessionId、turnId?、itemId?、kind、raw、summary、digest、expiresAt、state | 新请求为 pending，只接受一份决定。可进入 decided、expired 或 withdrawn。续期发新 ID。私有载荷的可见性见第 5 节。 |
@@ -78,7 +78,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 「全部取消并关闭」先逐个取消，再由创建者关闭。每一步独立产生事件。「隐藏已关闭」和「只看我建的」只筛选客户端已经收到的任务，后者依据 createdBy。
 
-公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。每个增量都写进公开事件日志，占一个游标；重连时按顺序补发，才能拼回完整输出。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、任务、会话和轮次引用，以及按原顺序排列的非空 questions。成功 attach 后重送仍有效的私有回调。
+公开通知 `event` 的 kind 为 `task.changed`、`session.changed`、`turn.changed`、`item.changed`、`usage.updated`。流式文本及命令输出用 `item.delta` 并携带 itemId。每个发布的增量都写进公开事件日志，占一个游标；重连时按顺序补发，才能拼回完整输出。只向所有者发送的即时通知为 `approval.requested` 与 `input.requested`，后者带 requestId、任务、会话和轮次引用，以及按原顺序排列的非空 questions。成功 attach 后重送仍有效的私有回调。
 
 每道输入题保留上游的字符串 id、header、question 和可选的 options（每项含 label、description）。Codex 的 isOther、isSecret 分别映射为必填的 allowOther、secret，省略时取上游默认值 false。上游 options 为 null 或缺省时，QO 省略该字段。secret 为 true 的题目，其回答只交给发起回调的 harness，不写入公开事件、日志或诊断。
 
@@ -96,6 +96,10 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 默认保留 7 天或 256 MiB 的事件有效载荷（含事件元数据，按编码后的 UTF-8 字节计），任一先达到即从最老记录连续裁剪。前者覆盖周末离线，后者限制高频输出的磁盘占用。配置字段为 `eventRetentionDays` 和 `eventRetentionBytes`，两者均须大于零。打开数据库时及每个写事务提交前按这两个上限连续裁剪前缀，裁剪失败则回滚该事务。上限只约束保留的事件，SQLite 索引、事务日志与当前态另计。裁剪不重置高水位。若 C 早于可续接下界，返回 `cursor_expired` 及保留区间，客户端用 `state.get` 的快照和配套游标重订阅。C 超过高水位返回无效参数。新客户端也可走快照路径，实时流不会静默跳过缺口。
 
+**大输出。** 写入线程把队列中已经到达、且会话、轮次和条目都相同的相邻增量合成一个 `item.delta`。遇到其他事件立即提交。默认目标 `outputBatchBytes` 为 256 KiB，兼顾 SQLite 整条投影的重写次数和其他条目的响应时间。队列空时直接提交，单条上游消息可以大于这个目标。保留全部输出，已提交的增量和投影共用一个事务。
+
+Windows 本机使用 Rust test profile、SQLite WAL 和 Node 命令输出 4 MiB，每次最多读取 4 KiB，从启动命令计时到轮次终态提交，再逐字验证投影。一次对照中，逐片写入产生 1,025 个公开增量，用时 223.98 秒，默认合并产生 18 个，用时 3.57 秒。两次测量有部分时间重叠。最终版本单独复跑为 17 个增量、3.56 秒。耗时和分批数随队列与机器负载变化。复跑用 `cargo test --locked -p qo-server --lib command_output_measurement -- --ignored --nocapture`，基线设置环境变量 `QO_BENCH_BATCH_BYTES=1`。
+
 ## 5. 审批归属、内容绑定与超时
 
 **候选**　由界面代批、以可自报的 clientId 辨认所有者，或由任务创建方持有独立随机密钥。前两种无法隔开网页和 Nemu 的决定权。
@@ -103,7 +107,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 **决定 / 理由**　服务只为内置界面登记固定所有者。浏览器或桌面 WebView 完成换码后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，线上编码为 64 位小写十六进制，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。内置界面取消外部会话时，依第 5.4 条撤销该会话全部未决审批和输入。之后提交审批决定或回答输入均返回 `request_withdrawn`，与摘要不符和审批超时分别处理。
 
 1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。从收到的 ApprovalRequest 去掉 digest 和 state 即得到 ApprovalDigestInput。缺省的 turnId、itemId 整个省略，操作上下文位于 raw.context。对该对象做 RFC 8785 规范化，取 UTF-8 字节的 SHA-256，输出小写十六进制 digest。服务和客户端共用 `qo_protocol::approval_digest`。[ApprovalDigestInput](../../packages/protocol/schema/protocol.json#/definitions/ApprovalDigestInput) · [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
-2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。处理输入回调时按原请求中各题的 secret 标记识别敏感回答。敏感回答只在私有回调中交付，不进入公开事件、日志或诊断。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
+2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。处理输入回调时按原请求中各题的 secret 标记识别敏感回答。敏感回答只在私有回调中交付，不进入公开事件、日志或诊断。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。 服务在内存中登记本次原生令牌、桌面令牌、收到的 ownerKey 和转交给 CLI 的凭据变量值，按原值替换为 `[redacted]`。同样替换 `sk-` 加至少 16 个字母、数字、下划线或连字符，Bearer 加空格或制表符及其后的非空白值，以及连续至少 64 个十六进制字符。每个条目单独保留至少 64 字节或最长已知秘密所需的尾部，命中跨界时一起保留，直到可以完整替换。终态提交前发出剩余安全文本。stderr 使用同一过滤器，仅写入服务标准错误。
 3. 服务在同一事务校验归属、pending、到期时间与 digest，原子记录决定。摘要不符只拒绝本次提交。征询的表单回答须通过该请求的模式校验，权限批准仅能返回此次列明的权限。对于仅能授予更广权限或需要额外信任流程的请求，本版返回拒绝或取消。如果上游回调或关联条目在等待时变更了实际操作，立即撤销旧请求，按新材料重新索取决定。相同 decisionId 和相同内容的重试返回现有结果，复用 ID 改内容或竞争提交第二份决定返回 conflict。只向原来的上游回调交付一次，接受仅限这次操作，拒绝权利扩展、永久规则和会话级授权。`approval.decide` 尝试交付后才返回，delivery 限 sent 或 unknown。若服务在记录决定后、交付前崩溃，`approval.get` 可能短暂读到 recorded，重启对账后改为 unknown 并结束受影响会话。客户端通过查询取得最终状态，无需另订交付通知。服务不会重新发送授权以探测执行结果。
 4. 审批有效期默认 10 分钟，可用 `approvalTtlSeconds` 配置，给用户留出阅读时间并限制陈旧授权。客户端断线时解绑，上游继续等待。到期使旧 ID 失效，上游仍等待。所有者回来后用 list 查看，renew 仅对仍活着的原回调重新核对材料，签发新 ID、digest 和期限。取消、进程退出或上游撤回时撤销所有相关请求。与决定竞争时按事务顺序处理。没有定时批准、缺省批准或其他客户端接管的路径。
 
@@ -120,6 +124,8 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | 追加、打断 | turn/steer 带 expectedTurnId。turn/interrupt 指定线程和轮次 |
 | 回调与回复 | 按下表分类，使用上游原 RPC id 响应。每条 JSON 消息单独占一行，stdout 只作协议通道，stderr 和凭据载荷不进入公开事件 |
 | 条目、终态和用量 | 消费 item 变化、turn/completed、thread/tokenUsage/updated。上游撤回或解析失败时通知服务 |
+
+轮次使用 Codex 返回的上游 ID 做 steer 与 interrupt。界面展示助手文本、命令和逐文件差异，推理及其他上游条目暂时省略。补丁更新使用上游最新的逐文件差异快照。3/5 收到任何上游回调都按原请求 ID 回复 unsupported 错误并结束会话。离线测试用真实登录的 0.162.1 录下正常完成、追加、打断及强制结束，保留与轮次映射有关的双向帧并替换上游标识。正常与追加录制里均有真实用量回报。[录制样本](../../packages/adapter-codex/fixtures)
 
 固定版 [harness 锁](../../config/harness.lock.json) 指向 Codex 0.162.1。启动命令为 `codex app-server`，使用默认 stdio JSONL。升级时重新核验版本与线协议，未经校验的版本不能启动会话。生成器直接调用工作区固定版本的 `codex app-server generate-json-schema --out <临时目录>`，从稳定的 ServerRequest 导出 Rust 载荷类型和方法枚举。已提交的 schema、绑定、枚举都由 CI 重新生成比对。Rust 的穷尽匹配让新增的回调必须得到明确分类。协议材料由适配器保存原始 JSON，生成类型用于解释字段，保留计算摘要所需的原文。[固定版发布记录](https://github.com/openai/codex/releases/tag/rust-v0.162.1) · [回调原始 schema](../../packages/adapter-codex/schema/ServerRequest.json)
 
@@ -141,6 +147,10 @@ QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/sche
 **候选**　复用用户现有 CLI 环境可减少配置。专用环境可以独立核验审批、工作目录和登录状态。
 
 **决定 / 理由**　仅给 QO 启动的子进程设置专用 `CODEX_HOME=<状态目录>/codex`，启动 app-server 的私有 stdio。父进程和日常开发的 Codex 配置独立。凭据只来自明确传入子进程的环境变量或专用 CLI 的既有登录状态。服务不复制日常登录文件，不向 harness 传递 QO 令牌或任务密钥。
+
+默认在服务的 PATH 中解析 Codex 可执行文件，`settings.json` 的 `codexPath` 可指定路径。每次打开会话先提交 `starting`，再释放 SQLite 写锁与服务状态锁，校验版本并握手。其他客户端此时可读取、写入或取消。启动结果通过事件线程提交为 `idle` 或 `failed`，并在同一事务定下原始回执。相同参数重试只等同一结果，取消和重启对账也能完成回执。
+
+子进程清空继承环境后只取存在的 PATH、PATHEXT、HOME、USERPROFILE、SystemRoot、WINDIR、COMSPEC、TEMP、TMP、TMPDIR、LANG、LC_ALL、LC_CTYPE、APPDATA、LOCALAPPDATA。服务另设专用 CODEX_HOME，凭据白名单目前只有 OPENAI_API_KEY。每个会话独占一个 JSONL 进程。Windows 用 `CreateJobObjectW`、`SetInformationJobObject` 设置 KILL_ON_JOB_CLOSE，挂起创建后调用 `AssignProcessToJobObject`，再恢复主线程。如果服务恰在分配 Job 前崩溃，挂起的子进程可能残留，此时它尚未执行用户代码。Unix 单独建进程组，终止时向整组发送 SIGKILL。Linux 在 exec 前调用 `prctl(PR_SET_PDEATHSIG, SIGKILL)` 并复核父 PID，创建线程与子进程句柄同寿命。父进程猝死时该信号只直接送给 Codex。macOS 在服务崩溃时依靠 stdin EOF。finish 先关闭 stdin，默认给 CLI 5 秒完成收尾，可调 `harnessFinishSeconds`，超时结束进程树。cancel 立即结束进程树。
 
 固定版本采用交互审批策略 `untrusted`、审批接收方 `user`、初始沙箱 `read-only`。核对 thread/start 返回的生效设置，禁用自动评审、会话放行和扩权规则。调用方不得覆盖。可继续执行哪些只读命令仍由该版本的内置可信规则决定，QO 只能转交 harness 实际发出的请求。写操作须有可核对的一次性审批与隔离边界，沙箱无法实现时终止该操作。[Codex 固定版配置](https://github.com/openai/codex/tree/rust-v0.162.1/codex-rs/app-server-protocol/schema/typescript/v2)
 
@@ -170,7 +180,7 @@ QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/sche
 
 **候选**　按文本长度或价目表推算，或保存 harness 实际回报并标明来源和缺项。
 
-**决定 / 理由**　采用后者。以下是从固定版生成类型核对的协议能力，本卡未执行付费轮次。
+**决定 / 理由**　采用后者。字段以固定版生成类型为准。3/5 的正常和追加录制验证了流式计数，账户分组按协议列出。
 
 | 来源 | 可展示 | 统计口径 |
 | --- | --- | --- |

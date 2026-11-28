@@ -41,26 +41,6 @@ fn hash(p: &Value) -> [u8; 32] {
         .try_into()
         .expect("SHA-256 length")
 }
-fn public_text(s: &str) -> String {
-    // Native credentials, cookies and task keys are all hex-encoded 32-byte secrets.
-    let mut out = String::new();
-    let mut start = 0;
-    for (i, c) in s.char_indices().chain(std::iter::once((s.len(), ' '))) {
-        if !c.is_ascii_hexdigit() {
-            out.push_str(if i - start >= 64 {
-                "[redacted]"
-            } else {
-                &s[start..i]
-            });
-            if i < s.len() {
-                out.push(c);
-            }
-            start = i + c.len_utf8();
-        }
-    }
-    out
-}
-
 struct Client {
     role: Role,
     out: Notifications,
@@ -93,6 +73,8 @@ impl Pending {
 struct Live {
     clients: BTreeMap<u64, Client>,
     holders: BTreeMap<Id, u64>,
+    streams: BTreeMap<(Id, Id, Id), StreamText>,
+    starting: BTreeMap<Id, (EventSink, Vec<HarnessEvent>)>,
     processes: BTreeMap<Id, Box<dyn Harness>>,
     pending: BTreeMap<Id, Pending>,
 }
@@ -110,6 +92,7 @@ impl Live {
         }
     }
     fn forget_session(&mut self, sid: &str) {
+        self.streams.retain(|(session, _, _), _| session != sid);
         self.pending.retain(|_, p| p.session() != sid);
         self.processes.remove(sid);
     }
@@ -139,6 +122,8 @@ pub struct ServiceBackend {
     store: Store,
     factory: Option<Box<dyn HarnessFactory>>,
     workspaces: PathBuf,
+    secrets: Arc<Secrets>,
+    ready: std::sync::Condvar,
     ttl: chrono::TimeDelta,
     live: Mutex<Live>,
     events: mpsc::Sender<(Id, HarnessEvent)>,
@@ -152,14 +137,21 @@ impl ServiceBackend {
     ) -> io::Result<Arc<Self>> {
         recover(&store).map_err(io::Error::other)?;
         let (events, rx) = mpsc::channel();
+        let secrets = Arc::new(Secrets::default());
+        if let Some(f) = &factory {
+            f.register_secrets(&secrets);
+        }
         let backend = Arc::new(Self {
             store,
             factory,
             workspaces,
             ttl: settings.approval_ttl()?,
             live: Mutex::default(),
+            secrets,
+            ready: Default::default(),
             events,
         });
+        let batch_bytes = settings.output_batch_bytes;
         let weak = Arc::downgrade(&backend);
         thread::Builder::new()
             .name("qo-harness-events".into())
@@ -168,10 +160,13 @@ impl ServiceBackend {
                 // RPCs check the deadline inside the decision transaction at full precision.
                 let interval = std::time::Duration::from_secs(1);
                 let mut next_expiry_check = std::time::Instant::now() + interval;
+                let mut next = None;
                 loop {
-                    let message = rx.recv_timeout(
-                        next_expiry_check.saturating_duration_since(std::time::Instant::now()),
-                    );
+                    let message = next.take().map(Ok).unwrap_or_else(|| {
+                        rx.recv_timeout(
+                            next_expiry_check.saturating_duration_since(std::time::Instant::now()),
+                        )
+                    });
                     if matches!(message, Err(mpsc::RecvTimeoutError::Disconnected)) {
                         break;
                     }
@@ -183,27 +178,94 @@ impl ServiceBackend {
                         }
                         next_expiry_check = std::time::Instant::now() + interval;
                     }
-                    let Ok((sid, event)) = message else { continue };
+                    let Ok((sid, mut event)) = message else {
+                        continue;
+                    };
+                    if let HarnessEvent::Delta { turn, delta } = &mut event {
+                        while delta.delta.len() < batch_bytes {
+                            match rx.try_recv() {
+                                Ok((id, HarnessEvent::Delta { turn: t, delta: d }))
+                                    if id == sid && t == *turn && d.item_id == delta.item_id =>
+                                {
+                                    delta.delta.push_str(&d.delta)
+                                }
+                                Ok(other) => {
+                                    next = Some(other);
+                                    break;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    if let HarnessEvent::Started(result) = event {
+                        backend.complete_start(&mut live, &sid, result);
+                        continue;
+                    }
+                    if let Some((_, early)) = live.starting.get_mut(&sid) {
+                        early.push(event);
+                        continue;
+                    }
                     if !live.processes.contains_key(&sid) {
                         continue;
                     }
-                    if let Err(e) = backend.upstream(&mut live, &sid, event) {
-                        match e {
-                            storage::Error::InvalidEvent
-                            | storage::Error::Rejected(_)
-                            | storage::Error::Conflict => {
-                                if let Err(error) =
-                                    backend.fail(&mut live, &sid, "invalid_harness_event")
-                                {
-                                    live.stop("recording a failed harness session", error);
-                                }
-                            }
-                            error => live.stop("handling a harness event", error),
-                        }
-                    }
+                    backend.handle_event(&mut live, &sid, event);
                 }
             })?;
         Ok(backend)
+    }
+    fn complete_start(&self, live: &mut Live, sid: &str, result: io::Result<Started>) {
+        if let Some((_, early)) = live.starting.remove(sid) {
+            let changed = self.commit(live, |c| {
+                let mut s: Session = object(c.tx, Projection::Session, sid)?;
+                match &result {
+                    Ok(started) => {
+                        s.state = SessionState::Idle;
+                        s.harness_version = self.secrets.text(&started.version);
+                        s.model = started.model.as_deref().map(|s| self.secrets.text(s));
+                        s.reasoning_effort = started
+                            .reasoning_effort
+                            .as_deref()
+                            .map(|s| self.secrets.text(s));
+                        s.service_tier = started
+                            .service_tier
+                            .as_deref()
+                            .map(|s| self.secrets.text(s));
+                    }
+                    Err(e) => {
+                        s.state = SessionState::Failed;
+                        s.error = Some(self.secrets.text(&e.to_string()));
+                        s.ended_at = Some(now());
+                    }
+                }
+                c.session(&s)
+            });
+            if let Err(e) = changed {
+                live.stop("completing session startup", e);
+            }
+            if let Ok(started) = result {
+                live.processes.insert(sid.into(), started.process);
+                for event in early {
+                    if live.processes.contains_key(sid) {
+                        self.handle_event(live, sid, event);
+                    }
+                }
+            }
+            self.ready.notify_all();
+        }
+    }
+    fn handle_event(&self, live: &mut Live, sid: &str, event: HarnessEvent) {
+        if let Err(e) = self.upstream(live, sid, event) {
+            match e {
+                storage::Error::InvalidEvent
+                | storage::Error::Rejected(_)
+                | storage::Error::Conflict => {
+                    if let Err(error) = self.fail(live, sid, "invalid_harness_event") {
+                        live.stop("recording a failed harness session", error);
+                    }
+                }
+                error => live.stop("handling a harness event", error),
+            }
+        }
     }
     fn commit<T>(
         &self,
@@ -227,8 +289,9 @@ impl ServiceBackend {
         if let Some(h) = l.processes.get_mut(sid) {
             h.terminate();
         }
+        let s = self.store.read(|db| object(db, Projection::Session, sid))?;
+        self.flush_streams(l, &s, None, None)?;
         self.commit(l, |c| {
-            let s = object(c.tx, Projection::Session, sid)?;
             c.end(s, SessionState::Failed, Some(reason.into()), None)
         })?;
         l.forget_session(sid);
@@ -292,7 +355,8 @@ impl ServiceBackend {
                 client.subscribed = true;
                 Ok(json!({}))
             }
-            Method::TaskCreate | Method::SessionOpen | Method::TurnStart | Method::TurnAppend => self.write_once(l, peer, m, p),
+            Method::SessionOpen => unreachable!(),
+            Method::TaskCreate | Method::TurnStart | Method::TurnAppend => self.write_once(l, peer, m, p),
             Method::TaskAttach => self.attach(l, peer, decode(p)?),
             Method::TaskClose => self.close_task(l, peer, &p),
             Method::SessionFinish | Method::SessionCancel => self.end_session(l, peer, &p, m == Method::SessionCancel),
@@ -303,6 +367,9 @@ impl ServiceBackend {
     }
 }
 impl Backend for ServiceBackend {
+    fn remember_secret(&self, secret: &str) {
+        self.secrets.remember(secret);
+    }
     fn connected(&self, p: Peer, out: Notifications) {
         let mut l = self.live.lock().unwrap();
         l.clients.insert(
@@ -325,15 +392,26 @@ impl Backend for ServiceBackend {
         l.holders.retain(|_, id| *id != p.id);
     }
     fn call(&self, p: Peer, m: Method, args: Value) -> RpcResult {
-        let mut l = self.live.lock().unwrap();
-        self.dispatch(&mut l, p, m, args).map_err(|e| match e {
+        if matches!(m, Method::TaskCreate | Method::TaskAttach)
+            && let Some(key) = args["ownerKey"].as_str()
+        {
+            self.secrets.remember(key);
+        }
+        let result = if m == Method::SessionOpen && p.role == Role::Desktop {
+            Err(ErrorReason::Forbidden.into())
+        } else if m == Method::SessionOpen {
+            self.open_session(p, args)
+        } else {
+            self.dispatch(&mut self.live.lock().unwrap(), p, m, args)
+        };
+        result.map_err(|e| match e {
             storage::Error::Rejected(r) => r.into(),
             storage::Error::Conflict => ErrorReason::Conflict.into(),
             storage::Error::InvalidCursor => ErrorReason::InvalidParams.into(),
             storage::Error::CursorExpired { oldest, high } => {
                 Failure::CursorExpired { oldest, high }
             }
-            error => l.stop(m.name(), error),
+            error => self.live.lock().unwrap().stop(m.name(), error),
         })
     }
 }

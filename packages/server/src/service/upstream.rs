@@ -11,6 +11,7 @@ impl ServiceBackend {
         let turn = match &event {
             HarnessEvent::Item(_) => item.as_ref().unwrap()["turnId"].as_str(),
             HarnessEvent::Delta { turn, .. }
+            | HarnessEvent::CommandEnded { turn, .. }
             | HarnessEvent::Input { turn, .. }
             | HarnessEvent::TurnEnded { turn, .. } => Some(turn.as_str()),
             HarnessEvent::Approval { turn, .. } => turn.as_deref(),
@@ -32,17 +33,41 @@ impl ServiceBackend {
                 let mut v = item.unwrap();
                 let turn = v["turnId"].as_str().unwrap().to_owned();
                 let id = v["itemId"].as_str().unwrap().to_owned();
-                match &mut v["content"] {
-                    Value::String(s) => *s = public_text(s),
-                    Value::Object(fields) => {
-                        for val in fields.values_mut() {
-                            if let Value::String(s) = val {
-                                *s = public_text(s);
-                            }
+                if v["state"] != "running" {
+                    self.flush_streams(l, &s, Some(&turn), Some(&id))?;
+                }
+                // An initial/updated snapshot can itself end halfway through a credential.
+                // Keep its streamable field on the same buffer as subsequent deltas.
+                // File patches are independent replacement snapshots; only text and command output take deltas.
+                let streaming = v["state"] == "running" && v["kind"] != "file_change";
+                let stream_field = match v["kind"].as_str() {
+                    Some("assistant_message") => None,
+                    Some("command_execution") => Some("output"),
+                    Some("file_change") => Some("diff"),
+                    _ => return Err(storage::Error::InvalidEvent),
+                };
+                if let Value::Object(fields) = &mut v["content"] {
+                    for (name, val) in fields {
+                        if Some(name.as_str()) != stream_field
+                            && let Value::String(text) = val
+                        {
+                            *text = self.secrets.text(text);
                         }
                     }
-                    _ => return Err(storage::Error::InvalidEvent),
                 }
+                let field = match stream_field {
+                    Some(k) => &mut v["content"][k],
+                    None => &mut v["content"],
+                };
+                let Value::String(text) = field else {
+                    return Err(storage::Error::InvalidEvent);
+                };
+                let mut stream = StreamText::default();
+                *text = if streaming {
+                    stream.push(&self.secrets, text)
+                } else {
+                    self.secrets.text(text)
+                };
                 self.commit(l, |c| {
                     let prior: Option<Value> =
                         c.tx.db
@@ -60,32 +85,45 @@ impl ServiceBackend {
                         return Err(storage::Error::InvalidEvent);
                     }
                     c.item(&s, &turn, v)
+                })?;
+                if streaming {
+                    l.streams.insert((sid.into(), turn, id), stream);
+                }
+                Ok(())
+            }
+            HarnessEvent::Delta { turn, delta } => {
+                let key = (sid.to_owned(), turn.clone(), delta.item_id.clone());
+                let released = l
+                    .streams
+                    .get_mut(&key)
+                    .ok_or(storage::Error::InvalidEvent)?
+                    .push(&self.secrets, &delta.delta);
+                self.write_delta(l, &s, &turn, &delta.item_id, &released)
+            }
+            HarnessEvent::CommandEnded {
+                turn,
+                item,
+                state,
+                exit_code,
+            } => {
+                self.flush_streams(l, &s, Some(&turn), Some(&item))?;
+                self.commit(l, |c| {
+                    let mut v: Value = object(c.tx, Projection::Item, &item)?;
+                    if v["turnId"] != turn
+                        || v["kind"] != "command_execution"
+                        || v["state"] != "running"
+                        || state == ItemState::Running
+                    {
+                        return Err(storage::Error::InvalidEvent);
+                    }
+                    v["state"] = json!(state);
+                    v["endedAt"] = json!(now());
+                    if let Some(code) = exit_code {
+                        v["content"]["exitCode"] = json!(code);
+                    }
+                    c.item(&s, &turn, v)
                 })
             }
-            HarnessEvent::Delta { turn, delta } => self.commit(l, |c| {
-                let mut v: Value = object(c.tx, Projection::Item, &delta.item_id)?;
-                if v["turnId"] != turn || v["state"] != "running" {
-                    return Err(storage::Error::InvalidEvent);
-                }
-                let delta_text = public_text(&delta.delta);
-                let field = match v["kind"].as_str() {
-                    Some("assistant_message") => &mut v["content"],
-                    Some("command_execution") => &mut v["content"]["output"],
-                    _ => return Err(storage::Error::InvalidEvent),
-                };
-                let Value::String(content) = field else {
-                    return Err(storage::Error::InvalidEvent);
-                };
-                content.push_str(&delta_text);
-                c.tx.put_projection(Projection::Item, &v)?;
-                c.event(
-                    "item.delta",
-                    &s.task_id,
-                    Some(sid),
-                    Some(&turn),
-                    json!({"itemId":delta.item_id,"delta":delta_text}),
-                )
-            }),
             HarnessEvent::Usage(mut u) => {
                 if u.session_id != sid {
                     return Err(storage::Error::InvalidEvent);
@@ -96,9 +134,9 @@ impl ServiceBackend {
                         return Err(storage::Error::InvalidEvent);
                     }
                 }
-                u.model = u.model.as_deref().map(public_text);
-                u.service_tier = u.service_tier.as_deref().map(public_text);
-                u.reasoning_effort = u.reasoning_effort.as_deref().map(public_text);
+                u.model = u.model.as_deref().map(|s| self.secrets.text(s));
+                u.service_tier = u.service_tier.as_deref().map(|s| self.secrets.text(s));
+                u.reasoning_effort = u.reasoning_effort.as_deref().map(|s| self.secrets.text(s));
                 self.commit(l, |c| {
                     let v = json!(u);
                     c.tx.put_projection(Projection::Usage, &v)?;
@@ -113,7 +151,7 @@ impl ServiceBackend {
             }
             HarnessEvent::Rerouted { model } => self.commit(l, |c| {
                 let mut s = s;
-                s.model = Some(public_text(&model));
+                s.model = Some(self.secrets.text(&model));
                 c.session(&s)?;
                 Ok(())
             }),
@@ -211,6 +249,7 @@ impl ServiceBackend {
                 Ok(())
             }
             HarnessEvent::TurnEnded { turn, state, error } => {
+                self.flush_streams(l, &s, Some(&turn), None)?;
                 if state == TurnState::Running {
                     return Err(storage::Error::InvalidEvent);
                 }
@@ -220,7 +259,7 @@ impl ServiceBackend {
                         sid,
                         &error
                             .as_deref()
-                            .map(public_text)
+                            .map(|s| self.secrets.text(s))
                             .unwrap_or_else(|| "harness_failed".into()),
                     );
                 }
@@ -232,8 +271,67 @@ impl ServiceBackend {
                 l.pending.retain(|_, p| p.session() != sid);
                 Ok(())
             }
+            HarnessEvent::Started(_) => unreachable!(),
+            HarnessEvent::Failed(reason) => self.fail(l, sid, &self.secrets.text(&reason)),
             HarnessEvent::Exited => self.fail(l, sid, "harness_lost"),
         }
+    }
+    fn write_delta(
+        &self,
+        l: &Live,
+        s: &Session,
+        turn: &str,
+        id: &str,
+        delta_text: &str,
+    ) -> Result<()> {
+        if delta_text.is_empty() {
+            return Ok(());
+        }
+        let sid = &s.session_id;
+        self.commit(l, |c| {
+            let mut v: Value = object(c.tx, Projection::Item, id)?;
+            if v["turnId"] != turn || v["state"] != "running" {
+                return Err(storage::Error::InvalidEvent);
+            }
+            let field = match v["kind"].as_str() {
+                Some("assistant_message") => &mut v["content"],
+                Some("command_execution") => &mut v["content"]["output"],
+                _ => return Err(storage::Error::InvalidEvent),
+            };
+            let Value::String(content) = field else {
+                return Err(storage::Error::InvalidEvent);
+            };
+            content.push_str(delta_text);
+            c.tx.put_projection(Projection::Item, &v)?;
+            c.event(
+                "item.delta",
+                &s.task_id,
+                Some(sid),
+                Some(turn),
+                json!({"itemId":id,"delta":delta_text}),
+            )
+        })
+    }
+    pub(super) fn flush_streams(
+        &self,
+        l: &mut Live,
+        s: &Session,
+        turn: Option<&str>,
+        item: Option<&str>,
+    ) -> Result<()> {
+        let keys: Vec<_> = l
+            .streams
+            .keys()
+            .filter(|(sid, t, i)| {
+                sid == &s.session_id && turn.is_none_or(|x| x == t) && item.is_none_or(|x| x == i)
+            })
+            .cloned()
+            .collect();
+        for key in keys {
+            let text = l.streams.remove(&key).unwrap().finish(&self.secrets);
+            self.write_delta(l, s, &key.1, &key.2, &text)?;
+        }
+        Ok(())
     }
     fn check_callback(l: &Live, sid: &str, callback: &str) -> Result<()> {
         if l.pending

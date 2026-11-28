@@ -3314,8 +3314,14 @@ dependencies = [
 name = "qo-adapter-codex"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "libc",
+ "qo-harness",
+ "qo-protocol",
  "serde",
  "serde_json",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3347,6 +3353,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "qo-protocol",
+ "regex",
  "serde",
  "serde_json",
  "uuid",
@@ -3388,6 +3395,7 @@ dependencies = [
  "hex",
  "include_dir",
  "open",
+ "qo-adapter-codex",
  "qo-conformance",
  "qo-harness",
  "qo-protocol",
