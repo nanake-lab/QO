@@ -1,7 +1,22 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { Id } from "@qo/protocol";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type {
+  Id,
+  Session,
+  SessionOpenParams,
+  TaskCreateParams,
+  TurnAppendParams,
+  TurnInterruptParams,
+  TurnStartParams,
+} from "@qo/protocol";
+import { CreateTaskDialog } from "./components/CreateTaskDialog.js";
 import { Sidebar } from "./components/Sidebar.js";
-import { TaskOverview } from "./components/TaskOverview.js";
+import { TaskWorkspace } from "./components/TaskWorkspace.js";
 import {
   QoConnection,
   isLoginCodeConsumed,
@@ -56,9 +71,11 @@ export function App() {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const { state, connectionStatus } = snapshot;
 
+  const connectionRef = useRef<QoConnection | null>(null);
   const [filters, setFilters] = useState<TaskFilters>(() => loadTaskFilters());
   const [selectedTaskId, setSelectedTaskId] = useState<Id | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<Id | null>(null);
+  const [showCreateTask, setShowCreateTask] = useState(false);
 
   useEffect(() => {
     const createConnection = () =>
@@ -72,6 +89,7 @@ export function App() {
       });
 
     let connection = createConnection();
+    connectionRef.current = connection;
     connection.start();
 
     const handleHashChange = () => {
@@ -88,6 +106,7 @@ export function App() {
       resetBrowserLoginExchange();
       connection.dispose();
       connection = createConnection();
+      connectionRef.current = connection;
       connection.start();
     };
     window.addEventListener("hashchange", handleHashChange);
@@ -95,6 +114,9 @@ export function App() {
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
       connection.dispose();
+      if (connectionRef.current === connection) {
+        connectionRef.current = null;
+      }
     };
   }, [store]);
 
@@ -133,6 +155,14 @@ export function App() {
     return sessions[0]?.sessionId ?? null;
   }, [selectedTask, selectedSessionId, state]);
 
+  const requireConnection = (): QoConnection => {
+    const conn = connectionRef.current;
+    if (!conn) {
+      throw new Error("连接尚未初始化");
+    }
+    return conn;
+  };
+
   const handleFiltersChange = (next: TaskFilters) => {
     setFilters(next);
     saveTaskFilters(next);
@@ -143,7 +173,44 @@ export function App() {
     setSelectedSessionId(sessionId ?? null);
   };
 
+  const handleCreateTask = async (params: TaskCreateParams) => {
+    const created = await requireConnection().call("task.create", params);
+    setSelectedTaskId(created.taskId);
+    setSelectedSessionId(null);
+  };
+
+  const handleOpenSession = async (
+    params: SessionOpenParams,
+  ): Promise<Session> => {
+    return requireConnection().call("session.open", params);
+  };
+
+  const handleFinishSession = async (taskId: Id, sessionId: Id) => {
+    await requireConnection().call("session.finish", { taskId, sessionId });
+  };
+
+  const handleCancelSession = async (taskId: Id, sessionId: Id) => {
+    await requireConnection().call("session.cancel", { taskId, sessionId });
+  };
+
+  const handleCloseTask = async (taskId: Id) => {
+    await requireConnection().call("task.close", { taskId });
+  };
+
+  const handleStartTurn = async (params: TurnStartParams) => {
+    await requireConnection().call("turn.start", params);
+  };
+
+  const handleAppendTurn = async (params: TurnAppendParams) => {
+    await requireConnection().call("turn.append", params);
+  };
+
+  const handleInterruptTurn = async (params: TurnInterruptParams) => {
+    await requireConnection().call("turn.interrupt", params);
+  };
+
   const banner = connectionBanner(connectionStatus);
+  const isConnected = connectionStatus.kind === "connected";
 
   return (
     <div className="workbench">
@@ -158,6 +225,7 @@ export function App() {
         selectedSessionId={effectiveSessionId}
         onFiltersChange={handleFiltersChange}
         onSelectTask={handleSelectTask}
+        onOpenCreateTask={() => setShowCreateTask(true)}
       />
 
       <main className="main-pane">
@@ -176,15 +244,31 @@ export function App() {
         ) : null}
 
         <div className="main-scroll">
-          <TaskOverview
+          <TaskWorkspace
             state={state}
             connectionStatus={connectionStatus}
             selectedTask={selectedTask}
             selectedSessionId={effectiveSessionId}
             onSelectSession={setSelectedSessionId}
+            onOpenCreateTask={() => setShowCreateTask(true)}
+            onOpenSession={handleOpenSession}
+            onFinishSession={handleFinishSession}
+            onCancelSession={handleCancelSession}
+            onCloseTask={handleCloseTask}
+            onStartTurn={handleStartTurn}
+            onAppendTurn={handleAppendTurn}
+            onInterruptTurn={handleInterruptTurn}
           />
         </div>
       </main>
+
+      {showCreateTask ? (
+        <CreateTaskDialog
+          isConnected={isConnected}
+          onCreate={handleCreateTask}
+          onClose={() => setShowCreateTask(false)}
+        />
+      ) : null}
     </div>
   );
 }

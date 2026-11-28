@@ -14,6 +14,7 @@ interface SidebarProps {
   readonly selectedSessionId: Id | null;
   readonly onFiltersChange: (next: TaskFilters) => void;
   readonly onSelectTask: (taskId: Id, sessionId?: Id) => void;
+  readonly onOpenCreateTask: () => void;
 }
 
 function renderTaskStatus(
@@ -107,18 +108,32 @@ export function Sidebar({
   selectedSessionId,
   onFiltersChange,
   onSelectTask,
+  onOpenCreateTask,
 }: SidebarProps) {
   const pill = connectionPill(connectionStatus);
   const hasAttention = attentionItems.length > 0;
+  const canCreateTask =
+    connectionStatus.kind !== "auth_expired" &&
+    connectionStatus.kind !== "error";
 
   return (
     <aside className="sidebar" aria-label={zhCN.sidebar.navLabel}>
       <header className="sidebar-header">
-        <h1 className="brand">{zhCN.app.name}</h1>
-        <span className="conn-pill" role="status" aria-live="polite">
-          <span className={pill.dotClass} aria-hidden="true" />
-          <span>{pill.label}</span>
-        </span>
+        <div className="sidebar-header-row">
+          <h1 className="brand">{zhCN.app.name}</h1>
+          <span className="conn-pill" role="status" aria-live="polite">
+            <span className={pill.dotClass} aria-hidden="true" />
+            <span>{pill.label}</span>
+          </span>
+        </div>
+        <button
+          type="button"
+          className="btn sidebar-create-btn"
+          disabled={!canCreateTask}
+          onClick={onOpenCreateTask}
+        >
+          {zhCN.sidebar.newTaskButton}
+        </button>
       </header>
 
       <section

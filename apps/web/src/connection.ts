@@ -84,7 +84,29 @@ export interface QoConnectionOptions {
   readonly cancelTimer?: (handle: unknown) => void;
 }
 
+/**
+ * 所有带客户端幂等 ID 的写操作：请求在途断线时，重连后用同一个 ID 与相同参数重发一次。
+ */
+export const IDEMPOTENT_WRITE_METHODS: ReadonlySet<ProtocolMethodName> =
+  new Set([
+    "task.create",
+    "session.open",
+    "turn.start",
+    "turn.append",
+    "approval.decide",
+  ]);
+
 interface PendingRequest {
+  method: ProtocolMethodName;
+  params: unknown;
+  idempotent: boolean;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+}
+
+interface QueuedRequest {
+  method: ProtocolMethodName;
+  params: unknown;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
 }
@@ -234,6 +256,7 @@ export class QoConnection {
   private socket: SocketLike | null = null;
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly retryQueue: QueuedRequest[] = [];
   private reconnectTimer: unknown = null;
   private reconnectAttempt = 0;
   private disposed = false;
@@ -283,10 +306,44 @@ export class QoConnection {
       current.onclose = null;
       current.close();
     }
-    this.rejectAllPending(new Error("连接已关闭"));
+    this.rejectAllRequests(new Error("连接已关闭"));
   }
 
   call<M extends ProtocolMethodName>(
+    method: M,
+    params: ProtocolMethods[M]["params"],
+  ): Promise<ProtocolMethods[M]["result"]> {
+    if (this.disposed || this.stopped) {
+      return Promise.reject(new Error("连接已关闭"));
+    }
+    const idempotent = IDEMPOTENT_WRITE_METHODS.has(method);
+    if (idempotent) {
+      return new Promise((resolve, reject) => {
+        const entry: QueuedRequest = {
+          method,
+          params,
+          resolve: resolve as (value: unknown) => void,
+          reject,
+        };
+        if (this.isReady()) {
+          this.sendOnSocket(entry, true);
+        } else {
+          this.retryQueue.push(entry);
+        }
+      });
+    }
+    return this.sendDirect(method, params);
+  }
+
+  private isReady(): boolean {
+    return (
+      this.socket !== null &&
+      this.socket.readyState === SOCKET_OPEN &&
+      this.status.kind === "connected"
+    );
+  }
+
+  private sendDirect<M extends ProtocolMethodName>(
     method: M,
     params: ProtocolMethods[M]["params"],
   ): Promise<ProtocolMethods[M]["result"]> {
@@ -294,27 +351,49 @@ export class QoConnection {
     if (!socket || socket.readyState !== SOCKET_OPEN) {
       return Promise.reject(new Error("WebSocket 尚未就绪"));
     }
+    return new Promise((resolve, reject) => {
+      this.sendOnSocket(
+        {
+          method,
+          params,
+          resolve: resolve as (value: unknown) => void,
+          reject,
+        },
+        false,
+      );
+    });
+  }
+
+  private sendOnSocket(entry: QueuedRequest, idempotent: boolean): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== SOCKET_OPEN) {
+      if (idempotent && !this.disposed && !this.stopped) {
+        this.retryQueue.push(entry);
+      } else {
+        entry.reject(new Error("WebSocket 尚未就绪"));
+      }
+      return;
+    }
     const id = this.nextId;
     this.nextId += 1;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-      });
-      try {
-        socket.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id,
-            method,
-            params,
-          }),
-        );
-      } catch (error) {
-        this.pending.delete(id);
-        reject(error);
+    this.pending.set(id, { ...entry, idempotent });
+    try {
+      socket.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: entry.method,
+          params: entry.params,
+        }),
+      );
+    } catch (error) {
+      this.pending.delete(id);
+      if (idempotent && !this.disposed && !this.stopped) {
+        this.retryQueue.push(entry);
+      } else {
+        entry.reject(error);
       }
-    });
+    }
   }
 
   private async bootstrap(): Promise<void> {
@@ -323,6 +402,7 @@ export class QoConnection {
       if (this.disposed) return;
       if (loginResult === "invalid") {
         this.stopped = true;
+        this.rejectAllRequests(new Error("登录链接已失效"));
         this.setStatus({
           kind: "auth_expired",
           cause: "login_link_invalid",
@@ -360,13 +440,17 @@ export class QoConnection {
       if (this.socket === socket) {
         this.socket = null;
       }
-      this.rejectAllPending(new Error("连接已断开"));
-      if (this.disposed || this.stopped) return;
+      this.handleDisconnectPending();
+      if (this.disposed || this.stopped) {
+        this.rejectAllRequests(new Error("连接已关闭"));
+        return;
+      }
 
       if (!didOpen) {
         const statusFromEvent = extractHttpStatus(closeEvent);
         if (statusFromEvent === 403) {
           this.stopped = true;
+          this.rejectAllRequests(new Error("登录状态已失效"));
           this.setStatus({
             kind: "auth_expired",
             cause: "session_expired",
@@ -414,6 +498,7 @@ export class QoConnection {
     }
     if (probe === "alive") {
       this.stopped = true;
+      this.rejectAllRequests(new Error("登录状态已失效"));
       this.setStatus({
         kind: "auth_expired",
         cause: "session_expired",
@@ -428,10 +513,11 @@ export class QoConnection {
     socket: SocketLike,
   ): Promise<void> {
     try {
-      const init = await this.call("initialize", { versions: ["qo.v1"] });
+      const init = await this.sendDirect("initialize", { versions: ["qo.v1"] });
       if (this.disposed || generation !== this.connectionGeneration) return;
       if (init.version !== "qo.v1") {
         this.stopped = true;
+        this.rejectAllRequests(new Error("协议版本不匹配"));
         this.setStatus({ kind: "error", cause: "unsupported_version" });
         socket.close();
         return;
@@ -442,7 +528,9 @@ export class QoConnection {
         await this.snapshotAndSubscribe(generation);
       } else {
         try {
-          await this.call("events.subscribe", { afterCursor: appliedCursor });
+          await this.sendDirect("events.subscribe", {
+            afterCursor: appliedCursor,
+          });
         } catch (error) {
           if (isQoRpcError(error) && error.reason === "cursor_expired") {
             await this.snapshotAndSubscribe(generation);
@@ -455,10 +543,12 @@ export class QoConnection {
       if (this.disposed || generation !== this.connectionGeneration) return;
       this.reconnectAttempt = 0;
       this.setStatus({ kind: "connected", version: init.version });
+      this.flushRetryQueue();
     } catch (error) {
       if (this.disposed || generation !== this.connectionGeneration) return;
       if (isQoRpcError(error) && error.reason === "unsupported_version") {
         this.stopped = true;
+        this.rejectAllRequests(new Error("协议版本不匹配"));
         this.setStatus({ kind: "error", cause: "unsupported_version" });
         socket.close();
         return;
@@ -474,11 +564,13 @@ export class QoConnection {
       attempt < MAX_SNAPSHOT_RETRIES_PER_CONNECT;
       attempt += 1
     ) {
-      const snapshot = await this.call("state.get", {});
+      const snapshot = await this.sendDirect("state.get", {});
       if (this.disposed || generation !== this.connectionGeneration) return;
       this.options.onSnapshot(snapshot);
       try {
-        await this.call("events.subscribe", { afterCursor: snapshot.cursor });
+        await this.sendDirect("events.subscribe", {
+          afterCursor: snapshot.cursor,
+        });
         return;
       } catch (error) {
         const isLast = attempt === MAX_SNAPSHOT_RETRIES_PER_CONNECT - 1;
@@ -559,12 +651,50 @@ export class QoConnection {
     }
   }
 
-  private rejectAllPending(reason: Error): void {
+  private handleDisconnectPending(): void {
     if (this.pending.size === 0) return;
     const entries = [...this.pending.values()];
     this.pending.clear();
+    const toRequeue: QueuedRequest[] = [];
+    const disconnectError = new Error("连接已断开");
     for (const entry of entries) {
-      entry.reject(reason);
+      if (entry.idempotent && !this.disposed && !this.stopped) {
+        toRequeue.push({
+          method: entry.method,
+          params: entry.params,
+          resolve: entry.resolve,
+          reject: entry.reject,
+        });
+      } else {
+        entry.reject(disconnectError);
+      }
+    }
+    if (toRequeue.length > 0) {
+      this.retryQueue.unshift(...toRequeue);
+    }
+  }
+
+  private flushRetryQueue(): void {
+    if (this.retryQueue.length === 0 || !this.isReady()) return;
+    const batch = this.retryQueue.splice(0, this.retryQueue.length);
+    for (const entry of batch) {
+      this.sendOnSocket(entry, true);
+    }
+  }
+
+  private rejectAllRequests(reason: Error): void {
+    if (this.pending.size > 0) {
+      const entries = [...this.pending.values()];
+      this.pending.clear();
+      for (const entry of entries) {
+        entry.reject(reason);
+      }
+    }
+    if (this.retryQueue.length > 0) {
+      const queued = this.retryQueue.splice(0, this.retryQueue.length);
+      for (const entry of queued) {
+        entry.reject(reason);
+      }
     }
   }
 

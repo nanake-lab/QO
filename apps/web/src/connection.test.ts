@@ -632,4 +632,182 @@ describe("QoConnection", () => {
 
     conn.dispose();
   });
+
+  it("retries in-flight client-ID write requests with identical ID and params after reconnect", async () => {
+    const store = new QoStore();
+    const timers = new ManualTimers();
+    const sockets: MockSocket[] = [];
+
+    const conn = new QoConnection({
+      url: "ws://127.0.0.1:47262/rpc",
+      getAppliedCursor: store.getAppliedCursor,
+      onSnapshot: store.onSnapshot,
+      onEvent: store.onEvent,
+      onApprovalRequested: store.onApprovalRequested,
+      onInputRequested: store.onInputRequested,
+      onStatusChange: store.onStatusChange,
+      createSocket: () => {
+        const socket = new MockSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      probeServer: async () => "unreachable",
+      exchangeLogin: async () => "none",
+      scheduleTimer: timers.schedule,
+      cancelTimer: timers.cancel,
+    });
+
+    conn.start();
+    await flushMicrotasks();
+    const s1 = sockets[0];
+    s1.emitOpen();
+    s1.replyOk(s1.sent[0].id, { version: "qo.v1" });
+    await flushMicrotasks();
+    s1.replyOk(s1.sent[1].id, sampleSnapshot("5"));
+    await flushMicrotasks();
+    s1.replyOk(s1.sent[2].id, {});
+    await flushMicrotasks();
+
+    const createParams = { taskId: T1, name: "重试任务" };
+    const openParams = { taskId: T1, sessionId: S1, model: "mock" };
+    const startParams = { sessionId: S1, turnId: TURN1, input: "hello" };
+    const appendId = "99999999-9999-4999-8999-999999999999";
+    const appendParams = {
+      sessionId: S1,
+      turnId: TURN1,
+      appendId,
+      input: "more",
+    };
+    const decisionId = "88888888-8888-4888-8888-888888888888";
+    const decideParams = {
+      taskId: T1,
+      approvalId: APPROVAL1,
+      decisionId,
+      digest: DIGEST,
+      choice: "allow_once" as const,
+    };
+
+    const pCreate = conn.call("task.create", createParams);
+    const pOpen = conn.call("session.open", openParams);
+    const pStart = conn.call("turn.start", startParams);
+    const pAppend = conn.call("turn.append", appendParams);
+    const pDecide = conn.call("approval.decide", decideParams);
+    const pClose = conn.call("task.close", { taskId: T1 });
+
+    // 未收到回复前断线：非幂等调用立刻失败，全部带客户端 ID 的写操作排队等待重连重发
+    s1.emitClose();
+    await flushMicrotasks();
+    await expect(pClose).rejects.toThrow("连接已断开");
+
+    timers.runNext();
+    const s2 = sockets[1];
+    s2.emitOpen();
+    s2.replyOk(s2.sent[0].id, { version: "qo.v1" });
+    await flushMicrotasks();
+    s2.replyOk(s2.sent[1].id, {});
+    await flushMicrotasks();
+
+    // 重连并续订完成后，按顺序以完全相同的 ID 与参数重发
+    const resent = s2.sent.slice(2);
+    expect(resent.map((r) => r.method)).toEqual([
+      "task.create",
+      "session.open",
+      "turn.start",
+      "turn.append",
+      "approval.decide",
+    ]);
+    expect(resent[0].params).toEqual(createParams);
+    expect(resent[1].params).toEqual(openParams);
+    expect(resent[2].params).toEqual(startParams);
+    expect(resent[3].params).toEqual(appendParams);
+    expect(resent[4].params).toEqual(decideParams);
+
+    s2.replyOk(resent[0].id, sampleTask("重试任务"));
+    s2.replyOk(resent[1].id, {
+      sessionId: S1,
+      taskId: T1,
+      harness: "mock",
+      harnessVersion: "0.1.0",
+      model: "mock",
+      state: "idle",
+      createdAt: AT,
+    });
+    s2.replyOk(resent[2].id, {
+      turnId: TURN1,
+      sessionId: S1,
+      input: "hello",
+      state: "running",
+      startedAt: AT,
+    });
+    s2.replyOk(resent[3].id, {
+      turnId: TURN1,
+      sessionId: S1,
+      input: "hello\nmore",
+      state: "running",
+      startedAt: AT,
+    });
+    s2.replyOk(resent[4].id, {
+      decisionId,
+      approvalId: APPROVAL1,
+      digest: DIGEST,
+      choice: "allow_once",
+      decidedAt: AT,
+      delivery: "sent",
+    });
+
+    await expect(pCreate).resolves.toMatchObject({ taskId: T1 });
+    await expect(pOpen).resolves.toMatchObject({ sessionId: S1 });
+    await expect(pStart).resolves.toMatchObject({ turnId: TURN1 });
+    await expect(pAppend).resolves.toMatchObject({ input: "hello\nmore" });
+    await expect(pDecide).resolves.toMatchObject({
+      decisionId,
+      delivery: "sent",
+    });
+
+    conn.dispose();
+  });
+
+  it("rejects queued idempotent writes when session becomes permanently auth_expired", async () => {
+    const store = new QoStore();
+    const timers = new ManualTimers();
+    const sockets: MockSocket[] = [];
+
+    const conn = new QoConnection({
+      url: "ws://127.0.0.1:47262/rpc",
+      getAppliedCursor: store.getAppliedCursor,
+      onSnapshot: store.onSnapshot,
+      onEvent: store.onEvent,
+      onApprovalRequested: store.onApprovalRequested,
+      onInputRequested: store.onInputRequested,
+      onStatusChange: store.onStatusChange,
+      createSocket: () => {
+        const socket = new MockSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      probeServer: async () => "alive",
+      exchangeLogin: async () => "none",
+      scheduleTimer: timers.schedule,
+      cancelTimer: timers.cancel,
+    });
+
+    conn.start();
+    await flushMicrotasks();
+
+    // 在连接尚未就绪时提交幂等写请求，若握手遇到 403 则不应永久挂起
+    const pendingCreate = conn.call("task.create", {
+      taskId: T1,
+      name: "不会卡死",
+    });
+    sockets[0].emitClose();
+    await flushMicrotasks();
+
+    await expect(pendingCreate).rejects.toThrow("登录状态已失效");
+    expect(conn.getStatus()).toEqual({
+      kind: "auth_expired",
+      cause: "session_expired",
+    });
+
+    conn.dispose();
+  });
 });
