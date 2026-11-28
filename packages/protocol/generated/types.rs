@@ -162,6 +162,7 @@ pub struct Session {
     pub cancelled_by: Option<CancelledBy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<Timestamp>,
+    pub harness_version: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -456,6 +457,7 @@ pub struct SessionOpenParams {
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    pub session_id: Id,
 }
 
 pub type SessionOpenResult = Session;
@@ -483,6 +485,7 @@ pub type SessionCancelResult = Session;
 pub struct TurnStartParams {
     pub session_id: Id,
     pub input: String,
+    pub turn_id: Id,
 }
 
 pub type TurnStartResult = Turn;
@@ -493,6 +496,7 @@ pub struct TurnAppendParams {
     pub session_id: Id,
     pub turn_id: Id,
     pub input: String,
+    pub append_id: Id,
 }
 
 pub type TurnAppendResult = Turn;
@@ -558,7 +562,18 @@ pub struct ApprovalDecideParams {
     pub answer: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-pub type ApprovalDecideResult = ApprovalDecision;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDecideResult {
+    pub decision_id: Id,
+    pub approval_id: Id,
+    pub digest: Digest,
+    pub choice: Choice,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<serde_json::Map<String, serde_json::Value>>,
+    pub decided_at: Timestamp,
+    pub delivery: DecisionDelivery,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -627,6 +642,62 @@ pub struct RpcErrorData {
     pub oldest_cursor: Option<Decimal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub high_water: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDigestInput {
+    pub approval_id: Id,
+    pub task_id: Id,
+    pub session_id: Id,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<Id>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<Id>,
+    pub kind: ApprovalKind,
+    pub raw: RawRequest,
+    pub summary: String,
+    pub expires_at: Timestamp,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalGetParams {
+    pub task_id: Id,
+    pub approval_id: Id,
+}
+
+pub type ApprovalGetResult = ApprovalStatus;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalStatus {
+    pub approval_id: Id,
+    pub task_id: Id,
+    pub session_id: Id,
+    pub kind: ApprovalKind,
+    pub state: ApprovalState,
+    pub expires_at: Timestamp,
+    pub digest: Digest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<ApprovalDecisionStatus>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDecisionStatus {
+    pub decision_id: Id,
+    pub choice: Choice,
+    pub decided_at: Timestamp,
+    pub delivery: Delivery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DecisionDelivery {
+    #[serde(rename = "sent")]
+    Sent,
+    #[serde(rename = "unknown")]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

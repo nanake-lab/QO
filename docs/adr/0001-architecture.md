@@ -26,16 +26,17 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 **候选**　直接暴露 Codex 的线程和条目，或用 QO 的 ID 关联各家回报。前者会把协议升级、重试以及跨客户端显示都绑在一家 harness 上。
 
-**决定 / 理由**　使用下表的 QO 对象。除特别说明外，ID 为小写 UUIDv4，每次创建生成一次，重启和回放沿用原值。父子关系由字段引用，不靠 ID 前缀解析。时间为服务器 UTC RFC 3339。`?` 表示可缺省。harness 自己的 ID 只进适配器映射。终态不可改写，补录观察值可追加新事件。
+**决定 / 理由**　使用下表的 QO 对象。除特别说明外，ID 为小写 UUIDv4，创建任务、开会话、开始轮次和追加指令的客户端分别生成 taskId、sessionId、turnId 和 appendId。重试、重启和回放沿用原值。父子关系由字段引用，不靠 ID 前缀解析。时间为服务器 UTC RFC 3339。`?` 表示可缺省。harness 自己的 ID 只进适配器映射。终态不可改写，补录观察值可追加新事件。
 
 | 对象 | 字段 | 产生与状态变化 |
 | --- | --- | --- |
 | Task 任务 | taskId、name、group?、cwd、forbiddenRoots、createdBy、state、createdAt、closedAt? | 创建方生成 taskId。服务登记内置界面归属，外部创建方另生成任务密钥。open 可开多个会话。createdBy 为 ui 或 external。open → closed 仅由创建者显式关闭；还有非终态会话时返回 conflict。全部会话结束后任务仍为 open。关闭后保留历史与事件，session.open 返回 conflict，第一版不支持重开。 |
-| Session 会话 | sessionId、taskId、harness、model?、reasoningEffort?、serviceTier?、state、error?、createdAt、cancelledBy?、endedAt? | starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。此时必须记录 cancelledBy（外部创建者为 owner，内置界面为 ui）。session.changed 向所有观察者公布该值。 |
-| Turn 轮次 | turnId、sessionId、input、state、startedAt、endedAt? | 同一会话同时只有一个 active 轮次。running → completed / interrupted / failed。等待期间轮次仍为 running。追加指令属于同一轮。 |
+| Session 会话 | sessionId、taskId、harness、harnessVersion、model?、reasoningEffort?、serviceTier?、state、error?、createdAt、cancelledBy?、endedAt? | 客户端生成 sessionId。harnessVersion 是启动前核对的 CLI 版本（mock 为 crate 版本）。model、reasoningEffort、serviceTier 取上游在 thread/start 返回的生效值，未报告的字段省略。上游报告 model/rerouted 时更新 Session 并发 session.changed。starting → idle。开始轮次进入 running。需要输入或审批时进入 waiting_input 或 waiting_approval。处理后回到相应等待态或 running。轮次结束回 idle，显式结束空闲会话成为 completed。启动或执行故障可成为 failed。显式取消可从任何非终态进入 cancelled。此时必须记录 cancelledBy（外部创建者为 owner，内置界面为 ui）。session.changed 向所有观察者公布该值。 |
+| Turn 轮次 | turnId、sessionId、input、state、startedAt、endedAt? | 客户端生成 turnId，每次追加另生成 appendId。同一会话同时只有一个 active 轮次。running → completed / interrupted / failed。等待期间轮次仍为 running。追加指令属于同一轮。 |
 | Item 条目 | itemId、turnId、kind、state、content、startedAt、endedAt? | assistant_message 累积文本。command_execution 记录命令、输出和可用的退出码。file_change 记录路径与变更。running → completed / failed / interrupted。一次性条目可直接以终态产生。 |
 | ApprovalRequest 审批请求 | approvalId、taskId、sessionId、turnId?、itemId?、kind、raw、summary、digest、expiresAt、state | 新请求为 pending，只接受一份决定。可进入 decided、expired 或 withdrawn。续期发新 ID。私有载荷的可见性见第 5 节。 |
 | ApprovalDecision 审批决定 | decisionId、approvalId、digest、choice、answer?、decidedAt、delivery | 创建方为每次决定生成 decisionId，choice 为 allow_once 或 deny。征询类请求可带所有者明确填写且符合请求表单的回答。服务持久化后 delivery 为 recorded，交付后为 sent，无法确认则为 unknown，不重放授权。 |
+| ApprovalStatus 审批状态 | approvalId、taskId、sessionId、kind、state、expiresAt、digest、decision? | 所有者可查询任务整个存续期内的记录，包括关闭后。已有决定时提供 decisionId、choice、decidedAt、delivery。 |
 | Usage 用量 | sessionId、turnId?、model?、reasoningEffort?、serviceTier?、source、counts、observedAt | 只读快照，以来源、会话及其统计维度为键，同一键由新快照替换。缺失的计数为 null，已知的零写为十进制字符串 `"0"`。缺失的统计维度可省略。观察样本的唯一 ID 为对应事件游标。 |
 | Event 事件 | cursor、at、kind、taskId、sessionId?、turnId?、payload | cursor 是事件 ID，由数据库事务分配。公开日志只追加。事件写入后不修改。 |
 
@@ -50,12 +51,15 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | task.create / task.attach | taskId，外部客户端另带 ownerKey。创建时另有 name、group?、forbiddenRoots?、cwd? | 创建或恢复该连接对任务的控制。创建重试须校验同一归属和相同参数 |
 | task.close | taskId | 关闭已无活动会话的任务 |
 | state.get | 无 | 公共任务、会话、轮次、条目、用量的同一事务快照及其 cursor |
-| session.open / session.finish / session.cancel | taskId。操作已有会话时带 sessionId，打开时可选 model、reasoningEffort、serviceTier | 返回会话。finish 只接受 idle |
-| turn.start / turn.append / turn.interrupt | sessionId。开始或追加带 input，追加或打断还须带 turnId | 返回对应轮次。旧 turnId 返回 conflict |
+| session.open / session.finish / session.cancel | taskId、sessionId。打开时客户端指定新 sessionId，可选 model、reasoningEffort、serviceTier | 返回会话。finish 只接受 idle |
+| turn.start / turn.append / turn.interrupt | sessionId、turnId。开始时客户端指定新 turnId。开始或追加带 input，每次追加必带新的 appendId | 返回对应轮次。对已结束轮次的新追加或打断返回 conflict |
 | input.answer | sessionId、turnId、requestId、answers | 按问题 ID 回答对应的待输入请求。每个值的形状为 `{"answers":["…"]}` |
 | approval.list / approval.renew / approval.decide | taskId。续期带 approvalId，决定带 approvalId、decisionId、digest、choice | 所有者取回未决及可续期请求、重取当前载荷或提交一次决定（征询的允许决定可另带 answer） |
+| approval.get | taskId、approvalId | 返回 ApprovalStatus。通过 list 或 renew 读取仍可处理的审批材料。 |
 | usage.get | sessionId | 返回会话快照和有来源的档位分组 |
 | events.subscribe | afterCursor | 确认订阅，随后按序送出 event 通知 |
+
+`task.create`、`session.open`、`turn.start`、`turn.append` 先核对目标任务归属，再查客户端 ID，最后检查对象状态。非所有者返回 `forbidden`。在同一方法下，同一 ID 和按 RFC 8785 规范化后相同的完整 params 原样返回首次成功结果，包括当时的时间和状态。重试不追加事件或重复驱动 harness。复用 ID 改参数、跨对象或跨任务复用均返回 `conflict`。防重记录和第一次写入在同一事务提交，保存至对应任务、会话或轮次清理。外部客户端换连接后用 `task.attach` 恢复归属，再重试。
 
 **方法权限**　外部连接的「自己的任务」指创建成功或凭任务密钥重新 attach 后由该连接控制的任务。内置界面重新连接后自动拥有界面建过的任务。桌面原生凭据仅用于发放登录链接，WebView 换码后按内置界面角色连接。
 
@@ -70,6 +74,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | task.close、session.open、session.finish | 只限自己的任务 | 只限自己的任务 | 不可以 |
 | turn.start、turn.append、turn.interrupt、input.answer | 只限自己的任务 | 只限自己的任务 | 不可以 |
 | approval.list、approval.renew、approval.decide | 只限自己的任务 | 只限自己的任务 | 不可以 |
+| approval.get | 只限自己的任务 | 只限自己的任务 | 不可以 |
 
 「全部取消并关闭」先逐个取消，再由创建者关闭。每一步独立产生事件。「隐藏已关闭」和「只看我建的」只筛选客户端已经收到的任务，后者依据 createdBy。
 
@@ -87,7 +92,7 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 **决定 / 理由**　公开事件采用连续递增的全局 64 位正整数游标，线上以十进制字符串表示，空日志的高水位为 `"0"`，第一条事件游标为 `"1"`。唯一写者在同一事务里更新投影、递增持久高水位并追加事件。回滚连同游标一起撤销。所有已认证客户端看到同一条公共序列，私有回调不占用公共游标。审批状态只公开“等审批”等会话状态，原始请求与决定保留在所有者通道。
 
-`afterCursor=C` 表示客户端已应用 C，只接收大于 C 的事件。订阅者先登记实时队列并取已提交高水位 H，补发 (C,H]，再按序发送队列中大于 H 的事件。回放期间以一致的读取视图隔离裁剪。客户端在应用事件后才保存游标，收到已处理游标时去重。慢连接超出服务发送缓冲可断开，再用最后已应用的游标接续。
+`afterCursor=C` 表示客户端已应用 C，只接收大于 C 的事件。订阅者先登记实时队列并取已提交高水位 H，补发 (C,H]，再按序发送队列中大于 H 的事件。回放期间以一致的读取视图隔离裁剪。客户端在应用事件后才保存游标，收到已处理游标时去重。慢连接超出服务发送缓冲可断开，再用最后已应用的游标接续。同一连接只接受一次成功订阅。第二次调用 `events.subscribe` 返回 `conflict`，原订阅继续按原游标顺序发送。
 
 默认保留 7 天或 256 MiB 的事件有效载荷（含事件元数据，按编码后的 UTF-8 字节计），任一先达到即从最老记录连续裁剪。前者覆盖周末离线，后者限制高频输出的磁盘占用。两项均可配置。上限只约束保留的事件，SQLite 索引、事务日志与当前态另计。裁剪不重置高水位。若 C 早于可续接下界，返回 `cursor_expired` 及保留区间，客户端用 `state.get` 的快照和配套游标重订阅。C 超过高水位返回无效参数。新客户端也可走快照路径，实时流不会静默跳过缺口。
 
@@ -97,9 +102,9 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 
 **决定 / 理由**　服务只为内置界面登记固定所有者。浏览器或桌面 WebView 完成换码后即可重新取得该界面的任务；两种入口对同一请求竞争时仍只提交一份决定。浏览器不保存任务密钥，也无需导出恢复文件。外部客户端每任务生成独立 32 字节 ownerKey，线上编码为 64 位小写十六进制，服务只保存校验值；原生服务令牌本身没有审批权。外部客户端只能对自己创建或凭正确密钥 attach 的任务作决定，重新 attach 时撤下旧连接的处理权。QO 不保存外部客户端的身份或记忆。内置界面取消外部会话时，依第 5.4 条撤销该会话全部未决审批和输入。之后提交审批决定或回答输入均返回 `request_withdrawn`，与摘要不符和审批超时分别处理。
 
-1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。digest 使用 SHA-256，计算对象含 approvalId、任务/轮次/条目引用、原始请求、操作上下文、summary 和 expiresAt。用 RFC 8785 规范 JSON 的 UTF-8 字节，输出小写 hex。[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
+1. 适配器保存上游 RPC 请求 ID 与进程实例的对应关系，连同原样的 method、params 和执行所需的命令或变更上下文，冻结为只读审批材料。请求缺少必要的命令、目标路径或待修改内容时，先关联同一 item 的数据。仍无法展示实际操作就中止该回调。人读的 summary 与核对用的 digest 都取自同一份材料。从收到的 ApprovalRequest 去掉 digest 和 state 即得到 ApprovalDigestInput。缺省的 turnId、itemId 整个省略，操作上下文位于 raw.context。对该对象做 RFC 8785 规范化，取 UTF-8 字节的 SHA-256，输出小写十六进制 digest。服务和客户端共用 `qo_protocol::approval_digest`。[ApprovalDigestInput](../../packages/protocol/schema/protocol.json#/definitions/ApprovalDigestInput) · [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
 2. 通过所有者的私有通知或私有读取交付材料。MCP 征询和旧版请求可能缺少 turnId、itemId；按已知进程、线程和原 RPC id 关联任务，不能唯一定位的请求直接拒绝。公开状态、重放日志、诊断和测试样本不携带凭据、ownerKey 或审批原文。处理输入回调时按原请求中各题的 secret 标记识别敏感回答。敏感回答只在私有回调中交付，不进入公开事件、日志或诊断。原始审批材料仅在处理中的服务内存保存。持久索引保留 ID、状态、到期时间和摘要哈希。命令、用户输入、差异和输出在进入投影或事件之前过滤凭据。无法安全公开的内容仅给状态。认证回调由 CLI 自行处理，不作为命令或审批展示。
-3. 服务在同一事务校验归属、pending、到期时间与 digest，原子记录决定。摘要不符只拒绝本次提交。征询的表单回答须通过该请求的模式校验，权限批准仅能返回此次列明的权限。对于仅能授予更广权限或需要额外信任流程的请求，本版返回拒绝或取消。如果上游回调或关联条目在等待时变更了实际操作，立即撤销旧请求，按新材料重新索取决定。相同 decisionId 和相同内容的重试返回现有结果，复用 ID 改内容或竞争提交第二份决定返回 conflict。只向原来的上游回调交付一次，接受仅限这次操作，拒绝权利扩展、永久规则和会话级授权。交付和崩溃可能相邻。状态不明即标 unknown 并结束受影响会话，不通过重发来探测执行结果。
+3. 服务在同一事务校验归属、pending、到期时间与 digest，原子记录决定。摘要不符只拒绝本次提交。征询的表单回答须通过该请求的模式校验，权限批准仅能返回此次列明的权限。对于仅能授予更广权限或需要额外信任流程的请求，本版返回拒绝或取消。如果上游回调或关联条目在等待时变更了实际操作，立即撤销旧请求，按新材料重新索取决定。相同 decisionId 和相同内容的重试返回现有结果，复用 ID 改内容或竞争提交第二份决定返回 conflict。只向原来的上游回调交付一次，接受仅限这次操作，拒绝权利扩展、永久规则和会话级授权。`approval.decide` 尝试交付后才返回，delivery 限 sent 或 unknown。若服务在记录决定后、交付前崩溃，`approval.get` 可能短暂读到 recorded，重启对账后改为 unknown 并结束受影响会话。客户端通过查询取得最终状态，无需另订交付通知。服务不会重新发送授权以探测执行结果。
 4. 审批有效期默认 10 分钟，可配置，给用户留出阅读时间并限制陈旧授权。客户端断线时解绑，上游继续等待。到期使旧 ID 失效，上游仍等待。所有者回来后用 list 查看，renew 仅对仍活着的原回调重新核对材料，签发新 ID、digest 和期限。取消、进程退出或上游撤回时撤销所有相关请求。与决定竞争时按事务顺序处理。没有定时批准、缺省批准或其他客户端接管的路径。
 
 ## 6. 适配器与版本边界
@@ -127,9 +132,9 @@ QO 的 Rust 服务在本机后台运行，独占它启动的编程助手。Tauri
 | `item/tool/requestUserInput` | 私有输入请求，按原始关联 ID 回答。 |
 | `item/tool/call`、`account/chatgptAuthTokens/refresh`、`attestation/generate` | 第一版未启用这些能力，显式拒绝。认证材料不进入审批流或日志。 |
 
-QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/schema)。同一组 JSON Schema 经 `pnpm generate` 生成 Rust 与 TS，生成物进库。2/4 定义全部对象、事件、校验器和样例，3/4 实现假服务端，4/4 运行一致性测试。两平台用 `pnpm generate:check` 检查生成物，差异即失败。
+QO 自身的契约来自 [packages/protocol/schema](../../packages/protocol/schema)。同一组 JSON Schema 经 `pnpm generate` 生成 Rust 与 TS，生成物进库。2/4 定义全部对象、事件、校验器和样例，3/4 实现假服务端，4/5 补全契约，5/5 运行一致性测试。两平台用 `pnpm generate:check` 检查生成物，差异即失败。
 
-每家适配器用脱敏的离线录制覆盖正常轮次、交错的审批回调、拒绝、打断、用量、撤销和异常退出。保留双向消息顺序、关联 ID 关系、预期 QO 输出。测试无需账户或模型。假服务端和外部一致性测试验证 QO 的线协议，真实厂商的转换由各自适配器卡验证。TypeScript 只生成静态类型。网页只连接本机服务，4/4 的一致性测试用 Rust 出参校验器逐条检查回复和通知，网页无需额外的运行时校验库。
+每家适配器用脱敏的离线录制覆盖正常轮次、交错的审批回调、拒绝、打断、用量、撤销和异常退出。保留双向消息顺序、关联 ID 关系、预期 QO 输出。测试无需账户或模型。假服务端和外部一致性测试验证 QO 的线协议，真实厂商的转换由各自适配器卡验证。TypeScript 只生成静态类型。网页只连接本机服务，5/5 的一致性测试用 Rust 出参校验器逐条检查回复和通知，网页无需额外的运行时校验库。
 
 ## 7. Codex 隔离与工作目录
 

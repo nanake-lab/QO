@@ -1,9 +1,10 @@
 {
   "taskId": "00000000-0000-4000-8000-000000000001",
-  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000002",
   "harness": "codex",
   "state": "cancelled",
   "createdAt": "2026-11-27T08:00:00Z",
   "cancelledBy": "owner",
-  "endedAt": "2026-11-27T08:00:00Z"
+  "endedAt": "2026-11-27T08:00:00Z",
+  "harnessVersion": "0.162.1"
 }

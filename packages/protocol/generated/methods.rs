@@ -18,6 +18,7 @@ rpc_methods! {
   ApprovalDecide => ("approval.decide", ApprovalDecideParams, ApprovalDecideResult),
   UsageGet => ("usage.get", UsageGetParams, UsageGetResult),
   EventsSubscribe => ("events.subscribe", EventsSubscribeParams, EventsSubscribeResult),
+  ApprovalGet => ("approval.get", ApprovalGetParams, ApprovalGetResult),
 }
 
 pub fn notification_schema(name: &str) -> Option<&'static str> {

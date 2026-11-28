@@ -1,6 +1,6 @@
 use crate::{
     scenario::Playback,
-    state::{Ownership, State, id, now, public_text},
+    state::{Ownership, Receipt, State, decode, now, public_text},
 };
 use qo_protocol::*;
 use qo_server::{Peer, Role, RpcResult};
@@ -16,24 +16,70 @@ fn terminal(s: SessionState) -> bool {
 }
 
 impl State {
-    pub fn create(&mut self, peer: Peer, mut p: TaskCreateParams) -> RpcResult {
-        let key = p
-            .owner_key
-            .take()
-            .map(|k| <[u8; 32]>::from(Sha256::digest(k)));
-        if (peer.role == Role::External) != key.is_some() {
-            return Err(ErrorReason::Forbidden.into());
-        }
-        let creation: [u8; 32] = Sha256::digest(serde_json::to_vec(&p).unwrap()).into();
-        if let Some(o) = self.owners.get(&p.task_id) {
-            if o.key_hash != key {
-                return Err(ErrorReason::Forbidden.into());
+    // Check the target owner before consulting the global ID namespace. All four writes
+    // run under the same lock as their receipt, events and script scheduling.
+    pub fn write_once(&mut self, peer: Peer, method: Method, p: Value) -> RpcResult {
+        let id_field = match method {
+            Method::TaskCreate => {
+                let task = p["taskId"].as_str().unwrap();
+                let key = p.get("ownerKey").and_then(Value::as_str);
+                if (peer.role == Role::External) != key.is_some() {
+                    return Err(ErrorReason::Forbidden.into());
+                }
+                if self.tasks.contains_key(task) {
+                    self.require_owner(peer, task)?;
+                }
+                "taskId"
             }
-            if o.creation != creation {
-                return Err(ErrorReason::Conflict.into());
+            Method::SessionOpen => {
+                self.require_owner(peer, p["taskId"].as_str().unwrap())?;
+                "sessionId"
             }
-            return Ok(json!(self.tasks[&p.task_id]));
+            Method::TurnStart | Method::TurnAppend => {
+                let session = self
+                    .sessions
+                    .get(p["sessionId"].as_str().unwrap())
+                    .ok_or(ErrorReason::NotFound)?;
+                self.require_owner(peer, &session.task_id)?;
+                if method == Method::TurnStart {
+                    "turnId"
+                } else {
+                    "appendId"
+                }
+            }
+            _ => unreachable!("method does not accept a client-generated ID"),
+        };
+        let id = p[id_field].as_str().unwrap().to_owned();
+        let params_digest = canonical_digest(&p);
+        if let Some(receipt) = self.receipts.get(&id) {
+            return if receipt.method == method && receipt.params_digest == params_digest {
+                Ok(receipt.result.clone())
+            } else {
+                Err(ErrorReason::Conflict.into())
+            };
         }
+        if self.id_used(&id) {
+            return Err(ErrorReason::Conflict.into());
+        }
+        let result = match method {
+            Method::TaskCreate => self.create(peer, decode(p)),
+            Method::SessionOpen => self.open(decode(p)),
+            Method::TurnStart => self.start(decode(p)),
+            Method::TurnAppend => self.append(decode(p)),
+            _ => unreachable!(),
+        }?;
+        self.receipts.insert(
+            id,
+            Receipt {
+                method,
+                params_digest,
+                result: result.clone(),
+            },
+        );
+        Ok(result)
+    }
+    fn create(&mut self, peer: Peer, p: TaskCreateParams) -> RpcResult {
+        let key = p.owner_key.map(|k| <[u8; 32]>::from(Sha256::digest(k)));
         let t = Task {
             task_id: p.task_id.clone(),
             name: public_text(&p.name),
@@ -64,7 +110,6 @@ impl State {
             Ownership {
                 key_hash: key,
                 holder: key.map(|_| peer.id),
-                creation,
             },
         );
         Ok(self.save_task(t))
@@ -102,15 +147,15 @@ impl State {
         task.state = TaskState::Closed;
         Ok(self.save_task(task))
     }
-    pub fn open(&mut self, peer: Peer, p: SessionOpenParams) -> RpcResult {
-        self.require_owner(peer, &p.task_id)?;
+    fn open(&mut self, p: SessionOpenParams) -> RpcResult {
         if self.tasks[&p.task_id].state == TaskState::Closed {
             return Err(ErrorReason::Conflict.into());
         }
         let mut s = Session {
             task_id: p.task_id,
-            session_id: id(),
+            session_id: p.session_id,
             harness: "mock".into(),
+            harness_version: env!("CARGO_PKG_VERSION").into(),
             model: p.model.as_deref().map(public_text),
             reasoning_effort: p.reasoning_effort.as_deref().map(public_text),
             service_tier: p.service_tier.as_deref().map(public_text),
@@ -163,19 +208,18 @@ impl State {
         s.ended_at = Some(now());
         Ok(self.save_session(s))
     }
-    pub fn start(&mut self, peer: Peer, p: TurnStartParams) -> RpcResult {
+    fn start(&mut self, p: TurnStartParams) -> RpcResult {
         let mut s = self
             .sessions
             .get(&p.session_id)
             .ok_or(ErrorReason::NotFound)?
             .clone();
-        self.require_owner(peer, &s.task_id)?;
         if s.state != SessionState::Idle {
             return Err(ErrorReason::Conflict.into());
         }
         let script = Playback::for_input(&p.input);
         let t = Turn {
-            turn_id: id(),
+            turn_id: p.turn_id,
             session_id: s.session_id.clone(),
             input: public_text(&p.input),
             state: TurnState::Running,
@@ -187,21 +231,24 @@ impl State {
         self.play.insert(t.turn_id.clone(), script);
         Ok(self.save_turn(t))
     }
-    pub fn change_turn(&mut self, peer: Peer, m: Method, p: Value) -> RpcResult {
+    fn running_turn(&self, session: &str, turn: &str) -> Result<Turn, ErrorReason> {
+        self.turns
+            .get(turn)
+            .filter(|t| t.session_id == session && t.state == TurnState::Running)
+            .cloned()
+            .ok_or(ErrorReason::Conflict)
+    }
+    fn append(&mut self, p: TurnAppendParams) -> RpcResult {
+        let mut t = self.running_turn(&p.session_id, &p.turn_id)?;
+        t.input.push('\n');
+        t.input.push_str(&public_text(&p.input));
+        Ok(self.save_turn(t))
+    }
+    pub fn interrupt(&mut self, peer: Peer, p: Value) -> RpcResult {
         let sid = p["sessionId"].as_str().unwrap();
         let mut s = self.sessions.get(sid).ok_or(ErrorReason::NotFound)?.clone();
         self.require_owner(peer, &s.task_id)?;
-        let mut t = self
-            .turns
-            .get(p["turnId"].as_str().unwrap())
-            .filter(|t| t.session_id == sid && t.state == TurnState::Running)
-            .ok_or(ErrorReason::Conflict)?
-            .clone();
-        if m == Method::TurnAppend {
-            t.input.push('\n');
-            t.input.push_str(&public_text(p["input"].as_str().unwrap()));
-            return Ok(self.save_turn(t));
-        }
+        let mut t = self.running_turn(sid, p["turnId"].as_str().unwrap())?;
         self.stop_playback(&t);
         t.state = TurnState::Interrupted;
         t.ended_at = Some(now());

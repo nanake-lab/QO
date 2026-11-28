@@ -181,9 +181,20 @@
         },
         "endedAt": {
           "$ref": "#/definitions/Timestamp"
+        },
+        "harnessVersion": {
+          "type": "string",
+          "minLength": 1
         }
       },
-      "required": ["sessionId", "taskId", "harness", "state", "createdAt"],
+      "required": [
+        "sessionId",
+        "taskId",
+        "harness",
+        "state",
+        "createdAt",
+        "harnessVersion"
+      ],
       "allOf": [
         {
           "if": {
@@ -778,9 +789,12 @@
         "serviceTier": {
           "type": "string",
           "minLength": 1
+        },
+        "sessionId": {
+          "$ref": "#/definitions/Id"
         }
       },
-      "required": ["taskId"]
+      "required": ["taskId", "sessionId"]
     },
     "SessionOpenResult": {
       "$ref": "#/definitions/Session"
@@ -827,9 +841,12 @@
         "input": {
           "type": "string",
           "minLength": 1
+        },
+        "turnId": {
+          "$ref": "#/definitions/Id"
         }
       },
-      "required": ["sessionId", "input"]
+      "required": ["sessionId", "input", "turnId"]
     },
     "TurnStartResult": {
       "$ref": "#/definitions/Turn"
@@ -847,9 +864,12 @@
         "input": {
           "type": "string",
           "minLength": 1
+        },
+        "appendId": {
+          "$ref": "#/definitions/Id"
         }
       },
-      "required": ["sessionId", "turnId", "input"]
+      "required": ["sessionId", "turnId", "input", "appendId"]
     },
     "TurnAppendResult": {
       "$ref": "#/definitions/Turn"
@@ -993,7 +1013,57 @@
       ]
     },
     "ApprovalDecideResult": {
-      "$ref": "#/definitions/ApprovalDecision"
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "decisionId": {
+          "$ref": "#/definitions/Id"
+        },
+        "approvalId": {
+          "$ref": "#/definitions/Id"
+        },
+        "digest": {
+          "$ref": "#/definitions/Digest"
+        },
+        "choice": {
+          "$ref": "#/definitions/Choice"
+        },
+        "answer": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "decidedAt": {
+          "$ref": "#/definitions/Timestamp"
+        },
+        "delivery": {
+          "$ref": "#/definitions/DecisionDelivery"
+        }
+      },
+      "required": [
+        "decisionId",
+        "approvalId",
+        "digest",
+        "choice",
+        "decidedAt",
+        "delivery"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "choice": {
+                "const": "deny"
+              }
+            },
+            "required": ["choice"]
+          },
+          "then": {
+            "not": {
+              "required": ["answer"]
+            }
+          }
+        }
+      ]
     },
     "UsageGetParams": {
       "type": "object",
@@ -1333,6 +1403,146 @@
         }
       },
       "required": ["reason"]
+    },
+    "ApprovalDigestInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "$ref": "#/definitions/Id"
+        },
+        "taskId": {
+          "$ref": "#/definitions/Id"
+        },
+        "sessionId": {
+          "$ref": "#/definitions/Id"
+        },
+        "turnId": {
+          "$ref": "#/definitions/Id"
+        },
+        "itemId": {
+          "$ref": "#/definitions/Id"
+        },
+        "kind": {
+          "$ref": "#/definitions/ApprovalKind"
+        },
+        "raw": {
+          "$ref": "#/definitions/RawRequest"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expiresAt": {
+          "$ref": "#/definitions/Timestamp"
+        }
+      },
+      "required": [
+        "approvalId",
+        "taskId",
+        "sessionId",
+        "kind",
+        "raw",
+        "summary",
+        "expiresAt"
+      ]
+    },
+    "ApprovalGetParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "taskId": {
+          "$ref": "#/definitions/Id"
+        },
+        "approvalId": {
+          "$ref": "#/definitions/Id"
+        }
+      },
+      "required": ["taskId", "approvalId"]
+    },
+    "ApprovalGetResult": {
+      "$ref": "#/definitions/ApprovalStatus"
+    },
+    "ApprovalStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approvalId": {
+          "$ref": "#/definitions/Id"
+        },
+        "taskId": {
+          "$ref": "#/definitions/Id"
+        },
+        "sessionId": {
+          "$ref": "#/definitions/Id"
+        },
+        "kind": {
+          "$ref": "#/definitions/ApprovalKind"
+        },
+        "state": {
+          "$ref": "#/definitions/ApprovalState"
+        },
+        "expiresAt": {
+          "$ref": "#/definitions/Timestamp"
+        },
+        "digest": {
+          "$ref": "#/definitions/Digest"
+        },
+        "decision": {
+          "$ref": "#/definitions/ApprovalDecisionStatus"
+        }
+      },
+      "required": [
+        "approvalId",
+        "taskId",
+        "sessionId",
+        "kind",
+        "state",
+        "expiresAt",
+        "digest"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "decided"
+              }
+            }
+          },
+          "then": {
+            "required": ["decision"]
+          },
+          "else": {
+            "not": {
+              "required": ["decision"]
+            }
+          }
+        }
+      ]
+    },
+    "ApprovalDecisionStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "decisionId": {
+          "$ref": "#/definitions/Id"
+        },
+        "choice": {
+          "$ref": "#/definitions/Choice"
+        },
+        "decidedAt": {
+          "$ref": "#/definitions/Timestamp"
+        },
+        "delivery": {
+          "$ref": "#/definitions/Delivery"
+        }
+      },
+      "required": ["decisionId", "choice", "decidedAt", "delivery"]
+    },
+    "DecisionDelivery": {
+      "type": "string",
+      "enum": ["sent", "unknown"]
     }
   }
 }

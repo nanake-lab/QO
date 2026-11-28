@@ -65,6 +65,7 @@ export interface Session {
   createdAt: Timestamp;
   cancelledBy?: CancelledBy;
   endedAt?: Timestamp;
+  harnessVersion: string;
 }
 
 export interface Turn {
@@ -283,6 +284,7 @@ export interface SessionOpenParams {
   model?: string;
   reasoningEffort?: string;
   serviceTier?: string;
+  sessionId: Id;
 }
 
 export type SessionOpenResult = Session;
@@ -304,6 +306,7 @@ export type SessionCancelResult = Session;
 export interface TurnStartParams {
   sessionId: Id;
   input: string;
+  turnId: Id;
 }
 
 export type TurnStartResult = Turn;
@@ -312,6 +315,7 @@ export interface TurnAppendParams {
   sessionId: Id;
   turnId: Id;
   input: string;
+  appendId: Id;
 }
 
 export type TurnAppendResult = Turn;
@@ -360,7 +364,15 @@ export interface ApprovalDecideParams {
   answer?: Record<string, unknown>;
 }
 
-export type ApprovalDecideResult = ApprovalDecision;
+export interface ApprovalDecideResult {
+  decisionId: Id;
+  approvalId: Id;
+  digest: Digest;
+  choice: Choice;
+  answer?: Record<string, unknown>;
+  decidedAt: Timestamp;
+  delivery: DecisionDelivery;
+}
 
 export interface UsageGetParams {
   sessionId: Id;
@@ -425,3 +437,42 @@ export interface RpcErrorData {
   oldestCursor?: Decimal;
   highWater?: Decimal;
 }
+
+export interface ApprovalDigestInput {
+  approvalId: Id;
+  taskId: Id;
+  sessionId: Id;
+  turnId?: Id;
+  itemId?: Id;
+  kind: ApprovalKind;
+  raw: RawRequest;
+  summary: string;
+  expiresAt: Timestamp;
+}
+
+export interface ApprovalGetParams {
+  taskId: Id;
+  approvalId: Id;
+}
+
+export type ApprovalGetResult = ApprovalStatus;
+
+export interface ApprovalStatus {
+  approvalId: Id;
+  taskId: Id;
+  sessionId: Id;
+  kind: ApprovalKind;
+  state: ApprovalState;
+  expiresAt: Timestamp;
+  digest: Digest;
+  decision?: ApprovalDecisionStatus;
+}
+
+export interface ApprovalDecisionStatus {
+  decisionId: Id;
+  choice: Choice;
+  decidedAt: Timestamp;
+  delivery: Delivery;
+}
+
+export type DecisionDelivery = "sent" | "unknown";

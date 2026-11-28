@@ -32,6 +32,26 @@ fn every_wire_schema_has_passing_and_failing_samples() {
             for path in samples {
                 let value = read(&path);
                 assert_eq!(named_valid(name, &value), expected, "{}", path.display());
+                if expected && name == "ApprovalDigestInput" {
+                    let input: ApprovalDigestInput = serde_json::from_value(value.clone()).unwrap();
+                    assert_eq!(serde_json::to_value(input).unwrap(), value);
+                    let digest = fs::read_to_string(path.with_extension("sha256")).unwrap();
+                    assert_eq!(
+                        canonical_digest(&value),
+                        digest.trim(),
+                        "{}",
+                        path.display()
+                    );
+                }
+                if expected && name == "ApprovalRequest" {
+                    let request: ApprovalRequest = serde_json::from_value(value.clone()).unwrap();
+                    assert_eq!(
+                        approval_digest(&request),
+                        request.digest,
+                        "{}",
+                        path.display()
+                    );
+                }
                 if name == "RpcError" {
                     assert_eq!(validate_error(&value), expected);
                 }
@@ -105,4 +125,23 @@ fn structured_answers_reference_questions_in_the_pending_request() {
         assert_eq!(serde_json::to_value(&reply).unwrap(), raw);
         assert_eq!(request.validate_answer_ids(&reply.answers), expected);
     }
+}
+
+#[test]
+fn digest_input_matches_request_without_digest_and_state() {
+    let root: Value = serde_json::from_str(CONTRACT).unwrap();
+    let defs = &root["definitions"];
+    let mut input = defs["ApprovalRequest"].clone();
+    for field in ["digest", "state"] {
+        input["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field)
+            .unwrap();
+        input["required"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|name| name != field);
+    }
+    assert_eq!(input, defs["ApprovalDigestInput"]);
 }

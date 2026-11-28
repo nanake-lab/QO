@@ -1,4 +1,4 @@
-use crate::state::{State, id, now, public_text};
+use crate::state::{State, now, public_text};
 use qo_protocol::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -31,6 +31,9 @@ pub enum Step {
     },
     Input {
         questions: Vec<InputQuestion>,
+    },
+    Reroute {
+        model: String,
     },
     Usage {
         usage: Counts,
@@ -68,6 +71,7 @@ impl Playback {
             Some("approval") => include_str!("../scenarios/approval.json"),
             Some("file-approval") => include_str!("../scenarios/file-approval.json"),
             Some("input") => include_str!("../scenarios/input.json"),
+            Some("reroute") => include_str!("../scenarios/reroute.json"),
             Some("slow") => include_str!("../scenarios/slow.json"),
             Some("fail") => include_str!("../scenarios/fail.json"),
             _ => include_str!("../scenarios/complete.json"),
@@ -99,6 +103,7 @@ pub enum Operation {
 #[derive(Clone)]
 pub struct Approval {
     pub request: ApprovalRequest,
+    pub decision: Option<ApprovalDecisionStatus>,
     pub operation: Operation,
     pub deadline: Instant,
 }
@@ -134,7 +139,7 @@ impl State {
                     let item = p
                         .assistant
                         .get_or_insert_with(|| {
-                            let item = id();
+                            let item = self.fresh_id();
                             self.save_item(
                                 &t,
                                 json!({
@@ -181,7 +186,7 @@ impl State {
                     );
                     let task = self.sessions[&t.session_id].task_id.clone();
                     let q = InputRequested {
-                        request_id: id(),
+                        request_id: self.fresh_id(),
                         questions,
                         task_id: task.clone(),
                         session_id: t.session_id.clone(),
@@ -191,6 +196,11 @@ impl State {
                     self.private(&task, "input.requested", &json!(q));
                     p.waiting = Some(q.request_id.clone());
                     self.inputs.insert(q.request_id.clone(), q);
+                }
+                Step::Reroute { model } => {
+                    let mut session = self.sessions[&t.session_id].clone();
+                    session.model = Some(public_text(&model));
+                    self.save_session(session);
                 }
                 Step::Usage { usage } => {
                     let session = &self.sessions[&t.session_id];
@@ -245,7 +255,7 @@ impl State {
         self.save_item(t, record);
     }
     fn start_operation(&mut self, t: &Turn, operation: Operation, approval: bool) -> Option<Id> {
-        let item = id();
+        let item = self.fresh_id();
         let (kind, content) = match &operation {
             Operation::Command { command, .. } => (
                 "command_execution",

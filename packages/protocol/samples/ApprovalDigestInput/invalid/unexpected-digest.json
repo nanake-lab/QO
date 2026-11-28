@@ -1,0 +1,23 @@
+{
+  "approvalId": "00000000-0000-4000-8000-000000000001",
+  "taskId": "00000000-0000-4000-8000-000000000001",
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "kind": "command_execution",
+  "raw": {
+    "method": "example/request",
+    "params": {
+      "nested": {
+        "": "private use",
+        "😀": "astral",
+        "count": 42,
+        "fraction": 1e-7,
+        "fixed": 1e-6,
+        "text": "第一行\n\"quote\"\\tab\t"
+      },
+      "values": [false, null, 12.5]
+    }
+  },
+  "summary": "确认示例命令：“你好”",
+  "expiresAt": "2026-11-27T08:00:00Z",
+  "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+}

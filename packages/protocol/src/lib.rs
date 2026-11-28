@@ -77,6 +77,24 @@ impl InputRequested {
     }
 }
 
+/// SHA-256 of RFC 8785 canonical UTF-8 JSON, encoded as lowercase hex.
+pub fn canonical_digest(value: &Value) -> Digest {
+    use sha2::{Digest as _, Sha256};
+    let bytes = serde_json_canonicalizer::to_vec(value).expect("JSON value is serializable");
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Rebuild ApprovalDigestInput from the wire request, including any optional references.
+pub fn approval_digest(request: &ApprovalRequest) -> Digest {
+    let mut input = serde_json::to_value(request).expect("serializable approval request");
+    let fields = input
+        .as_object_mut()
+        .expect("approval request is an object");
+    fields.remove("digest");
+    fields.remove("state");
+    canonical_digest(&input)
+}
+
 pub fn validate_error(value: &Value) -> bool {
     named_valid("RpcError", value)
 }
