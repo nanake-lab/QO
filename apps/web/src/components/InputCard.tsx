@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import type { InputAnswerParams, InputRequested } from "@qo/protocol";
 import { formatRpcError } from "../format.js";
 import { zhCN } from "../i18n/zh-CN.js";
@@ -21,6 +21,11 @@ interface InputCardProps {
   ) => Promise<void>;
 }
 
+/**
+ * 刻意不使用原生 <form> 与 type="submit"，并在 secret 密码框上使用
+ * autoComplete="new-password" 与每次随机的 name，避免 Chrome / Edge
+ * 忽略 autocomplete="off" 并在提交后弹出「保存密码」把保密回答写入密码库。
+ */
 export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
   const [drafts, setDrafts] = useState<InputDraftMap>(() =>
     createInitialInputDrafts(request.questions),
@@ -37,9 +42,8 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
     };
   }, [request.requestId, request.questions]);
 
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (submitting) return;
+  const handleSubmit = async () => {
+    if (submitting || !isConnected) return;
     setError(null);
 
     const built = buildInputAnswerPayload(request.questions, drafts);
@@ -71,6 +75,13 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
     }
   };
 
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    void handleSubmit();
+  };
+
   return (
     <section className="action-card" aria-label={zhCN.input.heading}>
       <div className="action-card-header">
@@ -80,13 +91,20 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
         </span>
       </div>
 
-      <form className="input-card-form" onSubmit={(e) => void handleSubmit(e)}>
+      <div
+        className="input-card-form"
+        role="group"
+        aria-label={zhCN.input.heading}
+      >
         {request.questions.map((question) => {
           const draft = drafts[question.id] ?? { selected: "", text: "" };
           const hasOptions =
             Array.isArray(question.options) && question.options.length > 0;
           const groupName = `qo-input-${request.requestId}-${question.id}`;
           const textInputId = `${groupName}-text`;
+          const ephemeralFieldName = question.secret
+            ? `qo-ephemeral-secret-${request.requestId}-${question.id}`
+            : undefined;
 
           return (
             <fieldset key={question.id} className="input-question-group">
@@ -154,9 +172,12 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
                       </label>
                       <input
                         id={textInputId}
+                        name={ephemeralFieldName}
                         type={question.secret ? "password" : "text"}
-                        autoComplete="off"
+                        autoComplete={question.secret ? "new-password" : "off"}
                         spellCheck={false}
+                        data-lpignore={question.secret ? "true" : undefined}
+                        data-1p-ignore={question.secret ? "true" : undefined}
                         className="form-input"
                         value={draft.text}
                         placeholder={
@@ -166,6 +187,7 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
                         }
                         disabled={submitting}
                         aria-label={`${question.header} ${zhCN.input.otherOptionLabel}`}
+                        onKeyDown={handleInputKeyDown}
                         onFocus={() => {
                           if (draft.selected !== OTHER_OPTION_SENTINEL) {
                             setDrafts((prev) => ({
@@ -194,9 +216,12 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
               ) : (
                 <input
                   id={textInputId}
+                  name={ephemeralFieldName}
                   type={question.secret ? "password" : "text"}
-                  autoComplete="off"
+                  autoComplete={question.secret ? "new-password" : "off"}
                   spellCheck={false}
+                  data-lpignore={question.secret ? "true" : undefined}
+                  data-1p-ignore={question.secret ? "true" : undefined}
                   className="form-input"
                   value={draft.text}
                   placeholder={
@@ -206,6 +231,7 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
                   }
                   disabled={submitting}
                   aria-label={question.header}
+                  onKeyDown={handleInputKeyDown}
                   onChange={(e) => {
                     const value = e.currentTarget.value;
                     setDrafts((prev) => ({
@@ -230,14 +256,15 @@ export function InputCard({ request, isConnected, onSubmit }: InputCardProps) {
 
         <div className="action-card-footer">
           <button
-            type="submit"
+            type="button"
             className="btn btn-action"
             disabled={!isConnected || submitting}
+            onClick={() => void handleSubmit()}
           >
             {submitting ? zhCN.input.submittingButton : zhCN.input.submitButton}
           </button>
         </div>
-      </form>
+      </div>
     </section>
   );
 }

@@ -40,8 +40,12 @@ import {
 } from "./state.js";
 import { QoStore } from "./store.js";
 
+/** 重连倒计时刷新周期（1 秒）：顶部提示按秒更新重试倒计时。 */
+const RECONNECT_COUNTDOWN_TICK_MS = 1_000;
+
 function connectionBanner(
   status: ConnectionStatus,
+  reconnectRemainingSec: number | null,
 ): { text: string; isAction: boolean } | null {
   switch (status.kind) {
     case "connected":
@@ -52,7 +56,8 @@ function connectionBanner(
       return {
         text: zhCN.connection.reconnecting(
           status.attempt,
-          Math.round(status.delayMs / 1000),
+          reconnectRemainingSec ??
+            Math.max(1, Math.ceil(status.delayMs / 1_000)),
         ),
         isAction: false,
       };
@@ -82,6 +87,13 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<Id | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<Id | null>(null);
   const [showCreateTask, setShowCreateTask] = useState(false);
+  const [reconnectRemainingSec, setReconnectRemainingSec] = useState<
+    number | null
+  >(null);
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
+  const prevConnKeyRef = useRef<string | null>(null);
+  const prevAttentionCountRef = useRef<number | null>(null);
+  const prevSessionRef = useRef<{ sessionId: Id; state: string } | null>(null);
 
   useEffect(() => {
     const createConnection = () =>
@@ -160,6 +172,94 @@ export function App() {
     }
     return sessions[0]?.sessionId ?? null;
   }, [selectedTask, selectedSessionId, state]);
+
+  const activeSession = effectiveSessionId
+    ? (state.sessions[effectiveSessionId] ?? null)
+    : null;
+
+  useEffect(() => {
+    if (connectionStatus.kind !== "reconnecting") {
+      setReconnectRemainingSec(null);
+      return;
+    }
+    const deadlineMs = Date.now() + connectionStatus.delayMs;
+    const updateRemaining = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((deadlineMs - Date.now()) / 1_000),
+      );
+      setReconnectRemainingSec(remaining);
+    };
+    updateRemaining();
+    const timer = window.setInterval(
+      updateRemaining,
+      RECONNECT_COUNTDOWN_TICK_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    const key =
+      connectionStatus.kind === "reconnecting"
+        ? `reconnecting:${connectionStatus.attempt}`
+        : connectionStatus.kind === "auth_expired"
+          ? `auth_expired:${connectionStatus.cause}`
+          : connectionStatus.kind;
+    const prev = prevConnKeyRef.current;
+    prevConnKeyRef.current = key;
+    if (prev === null || prev === key) return;
+
+    if (connectionStatus.kind === "connected") {
+      setLiveAnnouncement(zhCN.app.liveConnected);
+    } else if (connectionStatus.kind === "reconnecting") {
+      setLiveAnnouncement(zhCN.app.liveDisconnected(connectionStatus.attempt));
+    } else if (connectionStatus.kind === "auth_expired") {
+      setLiveAnnouncement(
+        connectionStatus.cause === "login_link_invalid"
+          ? zhCN.connection.loginLinkInvalidBanner
+          : zhCN.connection.authExpiredBanner,
+      );
+    } else if (connectionStatus.kind === "error") {
+      setLiveAnnouncement(zhCN.connection.unsupportedVersionBanner);
+    }
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    if (state.cursor === null) return;
+    const count = attentionItems.length;
+    const prev = prevAttentionCountRef.current;
+    prevAttentionCountRef.current = count;
+    if (prev === null || prev === count) return;
+    setLiveAnnouncement(zhCN.app.liveAttentionCount(count));
+  }, [state.cursor, attentionItems.length]);
+
+  useEffect(() => {
+    if (!selectedTask || !activeSession) {
+      prevSessionRef.current = null;
+      return;
+    }
+    const prev = prevSessionRef.current;
+    prevSessionRef.current = {
+      sessionId: activeSession.sessionId,
+      state: activeSession.state,
+    };
+    if (
+      !prev ||
+      prev.sessionId !== activeSession.sessionId ||
+      prev.state === activeSession.state
+    ) {
+      return;
+    }
+    const stateText =
+      selectedTask.createdBy === "external" &&
+      (activeSession.state === "waiting_approval" ||
+        activeSession.state === "waiting_input")
+        ? zhCN.overview.waitingExternalApproval
+        : zhCN.sessionState[activeSession.state];
+    setLiveAnnouncement(
+      zhCN.app.liveSessionState(selectedTask.name, stateText),
+    );
+  }, [selectedTask, activeSession]);
 
   const requireConnection = (): QoConnection => {
     const conn = connectionRef.current;
@@ -279,11 +379,24 @@ export function App() {
     }
   };
 
-  const banner = connectionBanner(connectionStatus);
+  const banner = connectionBanner(connectionStatus, reconnectRemainingSec);
   const isConnected = connectionStatus.kind === "connected";
 
   return (
     <div className="workbench">
+      <a href="#main-content" className="skip-link">
+        {zhCN.app.skipToMain}
+      </a>
+
+      <div
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {liveAnnouncement}
+      </div>
+
       <Sidebar
         connectionStatus={connectionStatus}
         cursor={state.cursor}
@@ -298,16 +411,14 @@ export function App() {
         onOpenCreateTask={() => setShowCreateTask(true)}
       />
 
-      <main className="main-pane">
+      <main id="main-content" className="main-pane" tabIndex={-1}>
         {banner ? (
           <div
             className={
               banner.isAction
-                ? "connection-banner connection-banner-action"
-                : "connection-banner"
+                ? "connection-banner connection-banner-action tabular"
+                : "connection-banner tabular"
             }
-            role="status"
-            aria-live="polite"
           >
             {banner.text}
           </div>

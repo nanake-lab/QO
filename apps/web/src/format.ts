@@ -181,20 +181,28 @@ export function buildSessionOpenParams(
 export function formatRpcError(error: unknown): string {
   if (isQoRpcError(error)) {
     switch (error.reason) {
+      case "unsupported_version":
+        return zhCN.errors.unsupportedVersion;
+      case "initialize_required":
+        return zhCN.errors.initializeRequired;
       case "forbidden":
         return zhCN.errors.forbidden;
       case "not_found":
         return zhCN.errors.notFound;
       case "conflict":
         return zhCN.errors.conflict;
-      case "invalid_params":
-        return zhCN.errors.invalidParams;
-      case "approval_expired":
-        return zhCN.errors.approvalExpired;
+      case "cursor_expired":
+        return zhCN.errors.cursorExpired;
       case "digest_mismatch":
         return zhCN.errors.digestMismatch;
+      case "approval_expired":
+        return zhCN.errors.approvalExpired;
       case "request_withdrawn":
         return zhCN.errors.requestWithdrawn;
+      case "method_not_found":
+        return zhCN.errors.methodNotFound;
+      case "invalid_params":
+        return zhCN.errors.invalidParams;
       case "internal_error":
         return zhCN.errors.internalError;
       default:

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
+import { useDialogFocusTrap } from "../focus.js";
 
 interface ConfirmDialogProps {
   readonly title: string;
@@ -21,22 +22,10 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  useEffect(() => {
-    cancelButtonRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [busy, onCancel]);
+  useDialogFocusTrap(dialogRef, cancelButtonRef, onCancel, !busy);
 
   return (
     <div
@@ -48,6 +37,7 @@ export function ConfirmDialog({
       }}
     >
       <div
+        ref={dialogRef}
         className="dialog-card"
         role="alertdialog"
         aria-modal="true"

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import type { TaskCreateParams } from "@qo/protocol";
+import { useDialogFocusTrap } from "../focus.js";
 import { buildTaskCreateParams, formatRpcError } from "../format.js";
 import { zhCN } from "../i18n/zh-CN.js";
 
@@ -20,22 +21,10 @@ export function CreateTaskDialog({
   const [forbiddenRootsText, setForbiddenRootsText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    nameInputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [submitting, onClose]);
+  useDialogFocusTrap(dialogRef, nameInputRef, onClose, !submitting);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -73,6 +62,7 @@ export function CreateTaskDialog({
       }}
     >
       <div
+        ref={dialogRef}
         className="dialog-card dialog-card-wide"
         role="dialog"
         aria-modal="true"

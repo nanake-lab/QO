@@ -128,24 +128,35 @@ describe("task and session payload builders", () => {
     });
   });
 
-  it("formats known RPC error reasons into plain Chinese", () => {
-    expect(
-      formatRpcError(
-        new QoRpcError({
-          code: -32003,
-          message: "forbidden",
-          data: { reason: "forbidden" },
-        }),
-      ),
-    ).toBe(zhCN.errors.forbidden);
-    expect(
-      formatRpcError(
-        new QoRpcError({
-          code: -32005,
-          message: "conflict",
-          data: { reason: "conflict" },
-        }),
-      ),
-    ).toBe(zhCN.errors.conflict);
+  it("formats all protocol RPC error reasons into plain Chinese", () => {
+    const expectedByReason = [
+      ["unsupported_version", zhCN.errors.unsupportedVersion],
+      ["initialize_required", zhCN.errors.initializeRequired],
+      ["forbidden", zhCN.errors.forbidden],
+      ["not_found", zhCN.errors.notFound],
+      ["conflict", zhCN.errors.conflict],
+      ["cursor_expired", zhCN.errors.cursorExpired],
+      ["digest_mismatch", zhCN.errors.digestMismatch],
+      ["approval_expired", zhCN.errors.approvalExpired],
+      ["request_withdrawn", zhCN.errors.requestWithdrawn],
+      ["method_not_found", zhCN.errors.methodNotFound],
+      ["invalid_params", zhCN.errors.invalidParams],
+      ["internal_error", zhCN.errors.internalError],
+    ] as const;
+
+    for (const [reason, expected] of expectedByReason) {
+      expect(
+        formatRpcError(
+          new QoRpcError({
+            code: -32000,
+            message: reason,
+            data: { reason },
+          }),
+        ),
+      ).toBe(expected);
+    }
+
+    expect(formatRpcError(new Error("自定义失败"))).toBe("自定义失败");
+    expect(formatRpcError("raw")).toBe(zhCN.errors.unknown);
   });
 });
