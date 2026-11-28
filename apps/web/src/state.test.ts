@@ -26,7 +26,16 @@ import {
   createInitialState,
   getMostUrgentSession,
   getNeedsAttentionItems,
+  getSessionApprovalDecisions,
+  getSessionWithdrawnNotices,
   groupVisibleTasks,
+  markApprovalExpired,
+  markApprovalWithdrawn,
+  markInputWithdrawn,
+  recordApprovalDecision,
+  replaceRenewedApproval,
+  setApprovalDeciding,
+  syncTaskApprovals,
   usageKey,
 } from "./state.js";
 
@@ -565,5 +574,82 @@ describe("task list grouping, urgency, attention queue, and filters", () => {
     expect(() =>
       saveTaskFilters({ hideClosed: true, onlyMine: true }, throwingStorage),
     ).not.toThrow();
+  });
+});
+
+describe("approval decisions, renewal, refresh, and withdrawal notices", () => {
+  it("records decisions (including unknown delivery) without emitting false withdrawal notice on deny", () => {
+    const approval = makeApproval();
+    let state = applyApprovalRequested(createInitialState(), approval);
+
+    // 用户发起拒绝时，服务端会先推 item.changed(interrupted) 再返回 approval.decide 结果
+    state = setApprovalDeciding(state, APPROVAL1, true);
+    state = apply(state, {
+      cursor: "1",
+      at: AT,
+      taskId: T1,
+      sessionId: S1,
+      turnId: TURN1,
+      kind: "item.changed",
+      payload: {
+        itemId: ITEM_CMD,
+        turnId: TURN1,
+        kind: "command_execution",
+        state: "interrupted",
+        startedAt: AT,
+        endedAt: AT,
+        content: { command: "echo hi", output: "" },
+      },
+    });
+    expect(getSessionWithdrawnNotices(state, S1)).toEqual([]);
+
+    state = recordApprovalDecision(state, approval, {
+      decisionId: "99999999-9999-4999-8999-999999999999",
+      approvalId: APPROVAL1,
+      digest: DIGEST,
+      choice: "deny",
+      decidedAt: AT,
+      delivery: "unknown",
+    });
+
+    const decisions = getSessionApprovalDecisions(state, S1);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].decision.choice).toBe("deny");
+    expect(decisions[0].decision.delivery).toBe("unknown");
+    expect(zhCN.approvalDelivery[decisions[0].decision.delivery]).toBe(
+      "不确定是否已送达，会话已结束",
+    );
+  });
+
+  it("replaces expired approvals on renew, refreshes via approval.list, and records withdrawn notices", () => {
+    const oldApproval = makeApproval();
+    let state = applyApprovalRequested(createInitialState(), oldApproval);
+
+    state = markApprovalExpired(state, APPROVAL1);
+    expect(state.approvals[APPROVAL1].state).toBe("expired");
+
+    const renewed = makeApproval({
+      approvalId: APPROVAL2,
+      expiresAt: "2026-11-28T00:20:00.000Z",
+      state: "pending",
+    });
+    state = replaceRenewedApproval(state, APPROVAL1, renewed);
+    expect(Object.keys(state.approvals)).toEqual([APPROVAL2]);
+
+    // 刷新列表替换该任务下的待决审批
+    state = syncTaskApprovals(state, T1, [oldApproval]);
+    expect(Object.keys(state.approvals)).toEqual([APPROVAL1]);
+
+    // 撤回审批与撤回提问都清除卡片并留下撤回提示
+    state = markApprovalWithdrawn(state, oldApproval);
+    expect(Object.keys(state.approvals)).toEqual([]);
+
+    const input = makeInput();
+    state = applyInputRequested(state, input);
+    state = markInputWithdrawn(state, input);
+    expect(Object.keys(state.inputs)).toEqual([]);
+
+    const notices = getSessionWithdrawnNotices(state, S1);
+    expect(notices.map((n) => n.kind)).toEqual(["approval", "input"]);
   });
 });

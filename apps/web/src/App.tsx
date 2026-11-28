@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -6,7 +7,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import type {
+  ApprovalDecideParams,
+  ApprovalRequest,
   Id,
+  InputAnswerParams,
+  InputRequested,
   Session,
   SessionOpenParams,
   TaskCreateParams,
@@ -26,6 +31,7 @@ import {
 } from "./connection.js";
 import { loadTaskFilters, saveTaskFilters } from "./filters.js";
 import { zhCN } from "./i18n/zh-CN.js";
+import { isQoRpcError } from "./protocol.js";
 import {
   getNeedsAttentionItems,
   getTaskSessions,
@@ -209,6 +215,70 @@ export function App() {
     await requireConnection().call("turn.interrupt", params);
   };
 
+  const handleRefreshApprovals = useCallback(
+    async (taskId: Id) => {
+      const result = await requireConnection().call("approval.list", {
+        taskId,
+      });
+      store.syncTaskApprovals(taskId, result.requests);
+    },
+    [store],
+  );
+
+  const handleDecideApproval = async (
+    request: ApprovalRequest,
+    params: ApprovalDecideParams,
+  ) => {
+    store.setApprovalDeciding(request.approvalId, true);
+    try {
+      const result = await requireConnection().call("approval.decide", params);
+      store.recordApprovalDecision(request, result);
+    } catch (error: unknown) {
+      store.setApprovalDeciding(request.approvalId, false);
+      if (isQoRpcError(error)) {
+        if (error.reason === "approval_expired") {
+          store.markApprovalExpired(request.approvalId);
+        } else if (error.reason === "request_withdrawn") {
+          store.markApprovalWithdrawn(request);
+        }
+      }
+      throw error;
+    }
+  };
+
+  const handleRenewApproval = async (request: ApprovalRequest) => {
+    try {
+      const renewed = await requireConnection().call("approval.renew", {
+        taskId: request.taskId,
+        approvalId: request.approvalId,
+      });
+      store.replaceRenewedApproval(request.approvalId, renewed);
+    } catch (error: unknown) {
+      if (isQoRpcError(error) && error.reason === "request_withdrawn") {
+        store.markApprovalWithdrawn(request);
+      }
+      throw error;
+    }
+  };
+
+  const handleAnswerInput = async (
+    request: InputRequested,
+    params: InputAnswerParams,
+  ) => {
+    store.setInputAnswering(request.requestId, true);
+    try {
+      await requireConnection().call("input.answer", params);
+      store.removeInputRequest(request.requestId);
+    } catch (error: unknown) {
+      if (isQoRpcError(error) && error.reason === "request_withdrawn") {
+        store.markInputWithdrawn(request);
+      } else {
+        store.setInputAnswering(request.requestId, false);
+      }
+      throw error;
+    }
+  };
+
   const banner = connectionBanner(connectionStatus);
   const isConnected = connectionStatus.kind === "connected";
 
@@ -258,6 +328,10 @@ export function App() {
             onStartTurn={handleStartTurn}
             onAppendTurn={handleAppendTurn}
             onInterruptTurn={handleInterruptTurn}
+            onDecideApproval={handleDecideApproval}
+            onRenewApproval={handleRenewApproval}
+            onRefreshApprovals={handleRefreshApprovals}
+            onAnswerInput={handleAnswerInput}
           />
         </div>
       </main>

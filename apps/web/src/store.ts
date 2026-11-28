@@ -1,7 +1,9 @@
 import type {
+  ApprovalDecideResult,
   ApprovalRequest,
   Decimal,
   Event,
+  Id,
   InputRequested,
   StateGetResult,
 } from "@qo/protocol";
@@ -12,6 +14,15 @@ import {
   applyInputRequested,
   applySnapshot,
   createInitialState,
+  markApprovalExpired,
+  markApprovalWithdrawn,
+  markInputWithdrawn,
+  recordApprovalDecision,
+  removeInputRequest,
+  replaceRenewedApproval,
+  setApprovalDeciding,
+  setInputAnswering,
+  syncTaskApprovals,
   type AppState,
 } from "./state.js";
 
@@ -63,6 +74,80 @@ export class QoStore {
 
   onStatusChange = (connectionStatus: ConnectionStatus): void => {
     this.update({ ...this.snapshot, connectionStatus });
+  };
+
+  setApprovalDeciding = (approvalId: Id, deciding: boolean): void => {
+    const nextState = setApprovalDeciding(
+      this.snapshot.state,
+      approvalId,
+      deciding,
+    );
+    if (nextState === this.snapshot.state) return;
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  recordApprovalDecision = (
+    request: ApprovalRequest,
+    decision: ApprovalDecideResult,
+  ): void => {
+    const nextState = recordApprovalDecision(
+      this.snapshot.state,
+      request,
+      decision,
+    );
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  markApprovalExpired = (approvalId: Id): void => {
+    const nextState = markApprovalExpired(this.snapshot.state, approvalId);
+    if (nextState === this.snapshot.state) return;
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  replaceRenewedApproval = (
+    oldApprovalId: Id,
+    renewed: ApprovalRequest,
+  ): void => {
+    const nextState = replaceRenewedApproval(
+      this.snapshot.state,
+      oldApprovalId,
+      renewed,
+    );
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  markApprovalWithdrawn = (request: ApprovalRequest): void => {
+    const nextState = markApprovalWithdrawn(this.snapshot.state, request);
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  syncTaskApprovals = (
+    taskId: Id,
+    requests: readonly ApprovalRequest[],
+  ): void => {
+    const nextState = syncTaskApprovals(this.snapshot.state, taskId, requests);
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  setInputAnswering = (requestId: Id, answering: boolean): void => {
+    const nextState = setInputAnswering(
+      this.snapshot.state,
+      requestId,
+      answering,
+    );
+    if (nextState === this.snapshot.state) return;
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  removeInputRequest = (requestId: Id): void => {
+    const nextState = removeInputRequest(this.snapshot.state, requestId);
+    if (nextState === this.snapshot.state) return;
+    this.update({ ...this.snapshot, state: nextState });
+  };
+
+  markInputWithdrawn = (request: InputRequested): void => {
+    const nextState = markInputWithdrawn(this.snapshot.state, request);
+    this.update({ ...this.snapshot, state: nextState });
   };
 
   private update(next: StoreSnapshot): void {

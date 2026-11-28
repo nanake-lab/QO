@@ -1,4 +1,5 @@
 import type {
+  ApprovalDecideResult,
   ApprovalRequest,
   Decimal,
   Event,
@@ -15,6 +16,25 @@ import type {
   Usage,
 } from "@qo/protocol";
 
+export interface ApprovalDecisionRecord {
+  readonly approvalId: Id;
+  readonly taskId: Id;
+  readonly sessionId: Id;
+  readonly turnId?: Id;
+  readonly itemId?: Id;
+  readonly summary: string;
+  readonly decision: ApprovalDecideResult;
+}
+
+export interface WithdrawnNotice {
+  readonly id: Id;
+  readonly kind: "approval" | "input";
+  readonly taskId: Id;
+  readonly sessionId: Id;
+  readonly turnId?: Id;
+  readonly itemId?: Id;
+}
+
 export interface AppState {
   readonly cursor: Decimal | null;
   readonly tasks: Readonly<Record<Id, Task>>;
@@ -24,6 +44,12 @@ export interface AppState {
   readonly usage: Readonly<Record<string, Usage>>;
   readonly approvals: Readonly<Record<Id, ApprovalRequest>>;
   readonly inputs: Readonly<Record<Id, InputRequested>>;
+  readonly approvalDecisions: Readonly<Record<Id, ApprovalDecisionRecord>>;
+  readonly withdrawnNotices: readonly WithdrawnNotice[];
+  /** 本地正在提交决定中的 approvalId，防止拒绝时伴随的 item.changed(interrupted) 被误记为「已撤回」。 */
+  readonly decidingApprovalIds: readonly Id[];
+  /** 本地正在提交回答中的 requestId，防止正常提交完成时被误记为「已撤回」。 */
+  readonly answeringInputIds: readonly Id[];
 }
 
 export interface TaskFilters {
@@ -59,6 +85,10 @@ export function createInitialState(): AppState {
     usage: {},
     approvals: {},
     inputs: {},
+    approvalDecisions: {},
+    withdrawnNotices: [],
+    decidingApprovalIds: [],
+    answeringInputIds: [],
   };
 }
 
@@ -110,6 +140,90 @@ function filterRecord<T>(
     }
   }
   return changed ? next : record;
+}
+
+function appendWithdrawnNotices(
+  existing: readonly WithdrawnNotice[],
+  additions: readonly WithdrawnNotice[],
+): readonly WithdrawnNotice[] {
+  if (additions.length === 0) return existing;
+  const seen = new Set(existing.map((n) => `${n.kind}:${n.id}`));
+  const next = [...existing];
+  let changed = false;
+  for (const notice of additions) {
+    const key = `${notice.kind}:${notice.id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      next.push(notice);
+      changed = true;
+    }
+  }
+  return changed ? next : existing;
+}
+
+function partitionRecord<T>(
+  record: Readonly<Record<Id, T>>,
+  keep: (value: T) => boolean,
+): { kept: Readonly<Record<Id, T>>; removed: T[] } {
+  const removed: T[] = [];
+  const next: Record<Id, T> = {};
+  for (const [id, value] of Object.entries(record)) {
+    if (keep(value)) {
+      next[id] = value;
+    } else {
+      removed.push(value);
+    }
+  }
+  return {
+    kept: removed.length > 0 ? next : record,
+    removed,
+  };
+}
+
+function approvalNoticesFromRemoved(
+  removed: readonly ApprovalRequest[],
+  decidingApprovalIds: readonly Id[],
+  approvalDecisions: Readonly<Record<Id, ApprovalDecisionRecord>>,
+): WithdrawnNotice[] {
+  const decidingSet = new Set(decidingApprovalIds);
+  const notices: WithdrawnNotice[] = [];
+  for (const req of removed) {
+    if (
+      req.state === "decided" ||
+      decidingSet.has(req.approvalId) ||
+      approvalDecisions[req.approvalId]
+    ) {
+      continue;
+    }
+    notices.push({
+      id: req.approvalId,
+      kind: "approval",
+      taskId: req.taskId,
+      sessionId: req.sessionId,
+      turnId: req.turnId,
+      itemId: req.itemId,
+    });
+  }
+  return notices;
+}
+
+function inputNoticesFromRemoved(
+  removed: readonly InputRequested[],
+  answeringInputIds: readonly Id[],
+): WithdrawnNotice[] {
+  const answeringSet = new Set(answeringInputIds);
+  const notices: WithdrawnNotice[] = [];
+  for (const req of removed) {
+    if (answeringSet.has(req.requestId)) continue;
+    notices.push({
+      id: req.requestId,
+      kind: "input",
+      taskId: req.taskId,
+      sessionId: req.sessionId,
+      turnId: req.turnId,
+    });
+  }
+  return notices;
 }
 
 export function applySnapshot(
@@ -168,6 +282,7 @@ export function applySnapshot(
   });
 
   return {
+    ...state,
     cursor: snapshot.cursor,
     tasks,
     sessions,
@@ -190,72 +305,139 @@ export function apply(state: AppState, event: Event): AppState {
   switch (event.kind) {
     case "task.changed": {
       const task = event.payload;
-      const approvals =
-        task.state === "closed"
-          ? filterRecord(state.approvals, (r) => r.taskId !== task.taskId)
-          : state.approvals;
-      const inputs =
-        task.state === "closed"
-          ? filterRecord(state.inputs, (r) => r.taskId !== task.taskId)
-          : state.inputs;
+      if (task.state !== "closed") {
+        return {
+          ...state,
+          cursor: event.cursor,
+          tasks: { ...state.tasks, [task.taskId]: task },
+        };
+      }
+      const ap = partitionRecord(
+        state.approvals,
+        (r) => r.taskId !== task.taskId,
+      );
+      const inp = partitionRecord(
+        state.inputs,
+        (r) => r.taskId !== task.taskId,
+      );
+      const notices = appendWithdrawnNotices(state.withdrawnNotices, [
+        ...approvalNoticesFromRemoved(
+          ap.removed,
+          state.decidingApprovalIds,
+          state.approvalDecisions,
+        ),
+        ...inputNoticesFromRemoved(inp.removed, state.answeringInputIds),
+      ]);
       return {
         ...state,
         cursor: event.cursor,
         tasks: { ...state.tasks, [task.taskId]: task },
-        approvals,
-        inputs,
+        approvals: ap.kept,
+        inputs: inp.kept,
+        withdrawnNotices: notices,
       };
     }
 
     case "session.changed": {
       const session = event.payload;
-      const terminal = isTerminalSessionState(session.state);
-      const approvals = terminal
-        ? filterRecord(
-            state.approvals,
-            (r) => r.sessionId !== session.sessionId,
-          )
-        : state.approvals;
-      const inputs = terminal
-        ? filterRecord(state.inputs, (r) => r.sessionId !== session.sessionId)
-        : state.inputs;
+      if (!isTerminalSessionState(session.state)) {
+        return {
+          ...state,
+          cursor: event.cursor,
+          sessions: { ...state.sessions, [session.sessionId]: session },
+        };
+      }
+      const ap = partitionRecord(
+        state.approvals,
+        (r) => r.sessionId !== session.sessionId,
+      );
+      const inp = partitionRecord(
+        state.inputs,
+        (r) => r.sessionId !== session.sessionId,
+      );
+      const notices = appendWithdrawnNotices(state.withdrawnNotices, [
+        ...approvalNoticesFromRemoved(
+          ap.removed,
+          state.decidingApprovalIds,
+          state.approvalDecisions,
+        ),
+        ...inputNoticesFromRemoved(inp.removed, state.answeringInputIds),
+      ]);
       return {
         ...state,
         cursor: event.cursor,
         sessions: { ...state.sessions, [session.sessionId]: session },
-        approvals,
-        inputs,
+        approvals: ap.kept,
+        inputs: inp.kept,
+        withdrawnNotices: notices,
       };
     }
 
     case "turn.changed": {
       const turn = event.payload;
-      const terminal = isTerminalTurnState(turn.state);
-      const approvals = terminal
-        ? filterRecord(state.approvals, (r) => r.turnId !== turn.turnId)
-        : state.approvals;
-      const inputs = terminal
-        ? filterRecord(state.inputs, (r) => r.turnId !== turn.turnId)
-        : state.inputs;
+      if (!isTerminalTurnState(turn.state)) {
+        return {
+          ...state,
+          cursor: event.cursor,
+          turns: { ...state.turns, [turn.turnId]: turn },
+        };
+      }
+      const ap = partitionRecord(
+        state.approvals,
+        (r) => r.turnId !== turn.turnId,
+      );
+      const inp = partitionRecord(
+        state.inputs,
+        (r) => r.turnId !== turn.turnId,
+      );
+      const notices = appendWithdrawnNotices(state.withdrawnNotices, [
+        ...approvalNoticesFromRemoved(
+          ap.removed,
+          state.decidingApprovalIds,
+          state.approvalDecisions,
+        ),
+        ...inputNoticesFromRemoved(inp.removed, state.answeringInputIds),
+      ]);
       return {
         ...state,
         cursor: event.cursor,
         turns: { ...state.turns, [turn.turnId]: turn },
-        approvals,
-        inputs,
+        approvals: ap.kept,
+        inputs: inp.kept,
+        withdrawnNotices: notices,
       };
     }
 
     case "item.changed": {
       const item = event.payload;
-      const approvals = isTerminalItemState(item.state)
-        ? filterRecord(state.approvals, (r) => r.itemId !== item.itemId)
-        : state.approvals;
+      if (!isTerminalItemState(item.state)) {
+        return {
+          ...state,
+          cursor: event.cursor,
+          items: { ...state.items, [item.itemId]: item },
+        };
+      }
+      const ap = partitionRecord(
+        state.approvals,
+        (r) => r.itemId !== item.itemId,
+      );
+      const notices =
+        item.state === "interrupted" || item.state === "failed"
+          ? appendWithdrawnNotices(
+              state.withdrawnNotices,
+              approvalNoticesFromRemoved(
+                ap.removed,
+                state.decidingApprovalIds,
+                state.approvalDecisions,
+              ),
+            )
+          : state.withdrawnNotices;
       return {
         ...state,
         cursor: event.cursor,
         items: { ...state.items, [item.itemId]: item },
-        approvals,
+        approvals: ap.kept,
+        withdrawnNotices: notices,
       };
     }
 
@@ -309,6 +491,28 @@ export function applyApprovalRequested(
   state: AppState,
   request: ApprovalRequest,
 ): AppState {
+  if (request.state === "withdrawn") {
+    const nextApprovals = filterRecord(
+      state.approvals,
+      (r) => r.approvalId !== request.approvalId,
+    );
+    const notices = appendWithdrawnNotices(state.withdrawnNotices, [
+      {
+        id: request.approvalId,
+        kind: "approval",
+        taskId: request.taskId,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+        itemId: request.itemId,
+      },
+    ]);
+    return {
+      ...state,
+      approvals: nextApprovals,
+      withdrawnNotices: notices,
+    };
+  }
+
   const existing = state.approvals[request.approvalId];
   if (
     existing &&
@@ -322,6 +526,130 @@ export function applyApprovalRequested(
   return {
     ...state,
     approvals: { ...state.approvals, [request.approvalId]: request },
+  };
+}
+
+export function setApprovalDeciding(
+  state: AppState,
+  approvalId: Id,
+  deciding: boolean,
+): AppState {
+  const present = state.decidingApprovalIds.includes(approvalId);
+  if (deciding === present) return state;
+  return {
+    ...state,
+    decidingApprovalIds: deciding
+      ? [...state.decidingApprovalIds, approvalId]
+      : state.decidingApprovalIds.filter((id) => id !== approvalId),
+  };
+}
+
+export function recordApprovalDecision(
+  state: AppState,
+  request: ApprovalRequest,
+  decision: ApprovalDecideResult,
+): AppState {
+  const nextApprovals = filterRecord(
+    state.approvals,
+    (r) => r.approvalId !== request.approvalId,
+  );
+  return {
+    ...state,
+    approvals: nextApprovals,
+    decidingApprovalIds: state.decidingApprovalIds.filter(
+      (id) => id !== request.approvalId,
+    ),
+    approvalDecisions: {
+      ...state.approvalDecisions,
+      [request.approvalId]: {
+        approvalId: request.approvalId,
+        taskId: request.taskId,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+        itemId: request.itemId,
+        summary: request.summary,
+        decision,
+      },
+    },
+  };
+}
+
+export function markApprovalExpired(state: AppState, approvalId: Id): AppState {
+  const existing = state.approvals[approvalId];
+  if (!existing || existing.state === "expired") return state;
+  return {
+    ...state,
+    approvals: {
+      ...state.approvals,
+      [approvalId]: { ...existing, state: "expired" },
+    },
+  };
+}
+
+export function replaceRenewedApproval(
+  state: AppState,
+  oldApprovalId: Id,
+  renewed: ApprovalRequest,
+): AppState {
+  const nextApprovals: Record<Id, ApprovalRequest> = {};
+  for (const [id, req] of Object.entries(state.approvals)) {
+    if (id !== oldApprovalId) {
+      nextApprovals[id] = req;
+    }
+  }
+  nextApprovals[renewed.approvalId] = renewed;
+  return {
+    ...state,
+    approvals: nextApprovals,
+  };
+}
+
+export function markApprovalWithdrawn(
+  state: AppState,
+  request: ApprovalRequest,
+): AppState {
+  const nextApprovals = filterRecord(
+    state.approvals,
+    (r) => r.approvalId !== request.approvalId,
+  );
+  return {
+    ...state,
+    approvals: nextApprovals,
+    decidingApprovalIds: state.decidingApprovalIds.filter(
+      (id) => id !== request.approvalId,
+    ),
+    withdrawnNotices: appendWithdrawnNotices(state.withdrawnNotices, [
+      {
+        id: request.approvalId,
+        kind: "approval",
+        taskId: request.taskId,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+        itemId: request.itemId,
+      },
+    ]),
+  };
+}
+
+export function syncTaskApprovals(
+  state: AppState,
+  taskId: Id,
+  requests: readonly ApprovalRequest[],
+): AppState {
+  const nextApprovals: Record<Id, ApprovalRequest> = {};
+  for (const [id, req] of Object.entries(state.approvals)) {
+    if (req.taskId !== taskId) {
+      nextApprovals[id] = req;
+    }
+  }
+  for (const req of requests) {
+    if (req.state === "pending" || req.state === "expired") {
+      nextApprovals[req.approvalId] = req;
+    }
+  }
+  return {
+    ...state,
+    approvals: nextApprovals,
   };
 }
 
@@ -342,6 +670,68 @@ export function applyInputRequested(
   return {
     ...state,
     inputs: { ...state.inputs, [request.requestId]: request },
+  };
+}
+
+export function setInputAnswering(
+  state: AppState,
+  requestId: Id,
+  answering: boolean,
+): AppState {
+  const present = state.answeringInputIds.includes(requestId);
+  if (answering === present) return state;
+  return {
+    ...state,
+    answeringInputIds: answering
+      ? [...state.answeringInputIds, requestId]
+      : state.answeringInputIds.filter((id) => id !== requestId),
+  };
+}
+
+export function removeInputRequest(state: AppState, requestId: Id): AppState {
+  const nextInputs = filterRecord(
+    state.inputs,
+    (r) => r.requestId !== requestId,
+  );
+  const nextAnswering = state.answeringInputIds.filter(
+    (id) => id !== requestId,
+  );
+  if (
+    nextInputs === state.inputs &&
+    nextAnswering.length === state.answeringInputIds.length
+  ) {
+    return state;
+  }
+  return {
+    ...state,
+    inputs: nextInputs,
+    answeringInputIds: nextAnswering,
+  };
+}
+
+export function markInputWithdrawn(
+  state: AppState,
+  request: InputRequested,
+): AppState {
+  const nextInputs = filterRecord(
+    state.inputs,
+    (r) => r.requestId !== request.requestId,
+  );
+  return {
+    ...state,
+    inputs: nextInputs,
+    answeringInputIds: state.answeringInputIds.filter(
+      (id) => id !== request.requestId,
+    ),
+    withdrawnNotices: appendWithdrawnNotices(state.withdrawnNotices, [
+      {
+        id: request.requestId,
+        kind: "input",
+        taskId: request.taskId,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+      },
+    ]),
   };
 }
 
@@ -497,4 +887,49 @@ export function getTurnItems(state: AppState, turnId: Id): Item[] {
       }
       return a.itemId.localeCompare(b.itemId);
     });
+}
+
+export function getSessionApprovals(
+  state: AppState,
+  sessionId: Id,
+): ApprovalRequest[] {
+  return Object.values(state.approvals)
+    .filter(
+      (req) =>
+        req.sessionId === sessionId &&
+        (req.state === "pending" || req.state === "expired"),
+    )
+    .sort((a, b) => a.approvalId.localeCompare(b.approvalId));
+}
+
+export function getSessionInputs(
+  state: AppState,
+  sessionId: Id,
+): InputRequested[] {
+  return Object.values(state.inputs)
+    .filter((req) => req.sessionId === sessionId)
+    .sort((a, b) => a.requestId.localeCompare(b.requestId));
+}
+
+export function getSessionApprovalDecisions(
+  state: AppState,
+  sessionId: Id,
+): ApprovalDecisionRecord[] {
+  return Object.values(state.approvalDecisions)
+    .filter((entry) => entry.sessionId === sessionId)
+    .sort((a, b) => {
+      if (a.decision.decidedAt !== b.decision.decidedAt) {
+        return a.decision.decidedAt < b.decision.decidedAt ? -1 : 1;
+      }
+      return a.approvalId.localeCompare(b.approvalId);
+    });
+}
+
+export function getSessionWithdrawnNotices(
+  state: AppState,
+  sessionId: Id,
+): WithdrawnNotice[] {
+  return state.withdrawnNotices.filter(
+    (notice) => notice.sessionId === sessionId,
+  );
 }

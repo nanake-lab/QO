@@ -108,9 +108,11 @@ export function TurnComposer({
       : zhCN.composer.startPlaceholder;
 
   const submitLabel = submitting
-    ? isRunning
-      ? zhCN.composer.appendingButton
-      : zhCN.composer.sendingButton
+    ? !isConnected
+      ? zhCN.composer.queuedButton
+      : isRunning
+        ? zhCN.composer.appendingButton
+        : zhCN.composer.sendingButton
     : isRunning
       ? zhCN.composer.appendButton
       : zhCN.composer.sendButton;

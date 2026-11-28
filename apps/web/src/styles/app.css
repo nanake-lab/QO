@@ -20,7 +20,8 @@ body,
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
   color: inherit;
 }
@@ -992,6 +993,244 @@ pre,
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* 审批卡与提问卡（仅在自己的待处理任务上出现，左侧行动色强调） */
+.action-cards-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-left: 2px solid var(--color-action);
+  border-radius: var(--radius-md);
+}
+
+.action-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.action-card-kind {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-action);
+}
+
+.countdown-badge {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.countdown-badge-expired {
+  color: var(--color-action);
+  font-weight: 600;
+}
+
+.approval-summary {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.permission-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.permission-item {
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.elicitation-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.elicitation-bool-label {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.required-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.unsupported-notice {
+  margin: 0;
+  padding: 8px 10px;
+  background-color: var(--bg-page);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.raw-toggle-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.raw-toggle-section .item-pre {
+  width: 100%;
+}
+
+.action-card-footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+/* 提问卡 */
+.input-card-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.input-question-group {
+  margin: 0;
+  padding: 12px;
+  background-color: var(--bg-page);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-question-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.input-question-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.input-options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.input-option-row input[type="radio"] {
+  margin: 3px 0 0;
+  accent-color: var(--color-action);
+  cursor: pointer;
+}
+
+.input-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.input-option-label {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.input-option-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.input-other-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 对话流里的审批结果与撤回行 */
+.stream-event-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background-color: var(--bg-page);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.stream-event-note-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.stream-event-note-main {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.stream-event-note-sep {
+  color: var(--text-muted);
+}
+
+.stream-event-note-delivery {
+  color: var(--text-secondary);
+}
+
+.withdrawn-line {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-default);
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* 对话框 */

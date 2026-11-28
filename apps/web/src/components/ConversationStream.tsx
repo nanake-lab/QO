@@ -6,11 +6,18 @@ import {
   parseInlineCode,
 } from "../format.js";
 import { zhCN } from "../i18n/zh-CN.js";
-import { getTurnItems, type AppState } from "../state.js";
+import {
+  getTurnItems,
+  type AppState,
+  type ApprovalDecisionRecord,
+  type WithdrawnNotice,
+} from "../state.js";
 
 interface ConversationStreamProps {
   readonly state: AppState;
   readonly turns: readonly Turn[];
+  readonly approvalDecisions: readonly ApprovalDecisionRecord[];
+  readonly withdrawnNotices: readonly WithdrawnNotice[];
 }
 
 function AssistantMessageView({ content }: { readonly content: string }) {
@@ -146,58 +153,140 @@ function FileChangeItemView({
   );
 }
 
-export function ConversationStream({ state, turns }: ConversationStreamProps) {
+function ApprovalDecisionLine({
+  record,
+}: {
+  readonly record: ApprovalDecisionRecord;
+}) {
+  return (
+    <div className="stream-event-note" role="status">
+      <div className="stream-event-note-row">
+        <span className="block-label">{zhCN.approval.decisionResultLabel}</span>
+        <span className="stream-event-note-main">
+          {zhCN.approvalChoice[record.decision.choice]}
+        </span>
+        <span className="stream-event-note-sep" aria-hidden="true">
+          ·
+        </span>
+        <span className="stream-event-note-delivery">
+          {zhCN.approvalDelivery[record.decision.delivery]}
+        </span>
+      </div>
+      <span className="muted-hint mono">{record.summary}</span>
+    </div>
+  );
+}
+
+function WithdrawnLine({ notice }: { readonly notice: WithdrawnNotice }) {
+  return (
+    <p className="withdrawn-line" role="status">
+      {notice.kind === "approval"
+        ? zhCN.approval.withdrawnLine
+        : zhCN.input.withdrawnLine}
+    </p>
+  );
+}
+
+export function ConversationStream({
+  state,
+  turns,
+  approvalDecisions,
+  withdrawnNotices,
+}: ConversationStreamProps) {
+  const turnIds = new Set(turns.map((turn) => turn.turnId));
+  const orphanDecisions = approvalDecisions.filter(
+    (record) => !record.turnId || !turnIds.has(record.turnId),
+  );
+  const orphanNotices = withdrawnNotices.filter(
+    (notice) => !notice.turnId || !turnIds.has(notice.turnId),
+  );
+
   return (
     <section className="turns-section" aria-label={zhCN.stream.turnsHeading}>
       <h3 className="turns-heading">{zhCN.stream.turnsHeading}</h3>
-      {turns.length === 0 ? (
+      {turns.length === 0 &&
+      orphanDecisions.length === 0 &&
+      orphanNotices.length === 0 ? (
         <p className="empty-state-body">{zhCN.stream.noTurnsBody}</p>
       ) : (
-        turns.map((turn) => {
-          const items = getTurnItems(state, turn.turnId);
-          return (
-            <div key={turn.turnId} className="turn-card">
-              <div className="turn-header">
-                <span className="block-label">
-                  {zhCN.stream.userInputLabel}
-                </span>
-                <span
-                  className={
-                    turn.state === "failed"
-                      ? "item-state-tag item-state-failed"
-                      : "item-state-tag"
-                  }
-                >
-                  {zhCN.turnState[turn.state]}
-                </span>
-              </div>
+        <>
+          {turns.map((turn) => {
+            const items = getTurnItems(state, turn.turnId);
+            const turnDecisions = approvalDecisions.filter(
+              (record) => record.turnId === turn.turnId,
+            );
+            const turnWithdrawn = withdrawnNotices.filter(
+              (notice) => notice.turnId === turn.turnId,
+            );
+            return (
+              <div key={turn.turnId} className="turn-card">
+                <div className="turn-header">
+                  <span className="block-label">
+                    {zhCN.stream.userInputLabel}
+                  </span>
+                  <span
+                    className={
+                      turn.state === "failed"
+                        ? "item-state-tag item-state-failed"
+                        : "item-state-tag"
+                    }
+                  >
+                    {zhCN.turnState[turn.state]}
+                  </span>
+                </div>
 
-              <p className="turn-input-text">{turn.input}</p>
+                <p className="turn-input-text">{turn.input}</p>
 
-              {items.map((item) => {
-                if (item.kind === "assistant_message") {
-                  return (
-                    <div key={item.itemId} className="item-block">
-                      <div className="item-header">
-                        <span className="block-label">
-                          {zhCN.stream.assistantLabel}
-                        </span>
-                        <span className="item-state-tag">
-                          {zhCN.itemState[item.state]}
-                        </span>
+                {items.map((item) => {
+                  if (item.kind === "assistant_message") {
+                    return (
+                      <div key={item.itemId} className="item-block">
+                        <div className="item-header">
+                          <span className="block-label">
+                            {zhCN.stream.assistantLabel}
+                          </span>
+                          <span className="item-state-tag">
+                            {zhCN.itemState[item.state]}
+                          </span>
+                        </div>
+                        <AssistantMessageView content={item.content} />
                       </div>
-                      <AssistantMessageView content={item.content} />
-                    </div>
-                  );
-                }
-                if (item.kind === "command_execution") {
-                  return <CommandItemView key={item.itemId} item={item} />;
-                }
-                return <FileChangeItemView key={item.itemId} item={item} />;
-              })}
-            </div>
-          );
-        })
+                    );
+                  }
+                  if (item.kind === "command_execution") {
+                    return <CommandItemView key={item.itemId} item={item} />;
+                  }
+                  return <FileChangeItemView key={item.itemId} item={item} />;
+                })}
+
+                {turnDecisions.map((record) => (
+                  <ApprovalDecisionLine
+                    key={record.approvalId}
+                    record={record}
+                  />
+                ))}
+
+                {turnWithdrawn.map((notice) => (
+                  <WithdrawnLine
+                    key={`${notice.kind}:${notice.id}`}
+                    notice={notice}
+                  />
+                ))}
+              </div>
+            );
+          })}
+
+          {orphanDecisions.map((record) => (
+            <ApprovalDecisionLine key={record.approvalId} record={record} />
+          ))}
+
+          {orphanNotices.map((notice) => (
+            <WithdrawnLine
+              key={`${notice.kind}:${notice.id}`}
+              notice={notice}
+            />
+          ))}
+        </>
       )}
     </section>
   );
