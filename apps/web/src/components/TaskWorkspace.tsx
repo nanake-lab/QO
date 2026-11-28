@@ -1,4 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import type {
   ApprovalDecideParams,
   ApprovalRequest,
@@ -26,11 +32,13 @@ import {
   isTerminalSessionState,
   type AppState,
 } from "../state.js";
+import { groupSessionUsage } from "../usage.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { ConversationStream } from "./ConversationStream.js";
 import { InputCard } from "./InputCard.js";
 import { TurnComposer } from "./TurnComposer.js";
+import { UsagePanel } from "./UsagePanel.js";
 
 interface TaskWorkspaceProps {
   readonly state: AppState;
@@ -106,6 +114,10 @@ export function TaskWorkspace({
   const [closeAllProgress, setCloseAllProgress] = useState<string | null>(null);
   const [closeAllError, setCloseAllError] = useState<string | null>(null);
 
+  const openSessionBtnRef = useRef<HTMLButtonElement | null>(null);
+  const modelInputRef = useRef<HTMLInputElement | null>(null);
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
   const taskId = selectedTask?.taskId ?? null;
   useEffect(() => {
     setShowOpenSession(false);
@@ -127,6 +139,12 @@ export function TaskWorkspace({
     setSessionActionError(null);
     setConfirmExternalCancel(false);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (showOpenSession) {
+      modelInputRef.current?.focus();
+    }
+  }, [showOpenSession]);
 
   const isConnected = connectionStatus.kind === "connected";
   const totalTasks = Object.keys(state.tasks).length;
@@ -221,6 +239,31 @@ export function TaskWorkspace({
   const sessionWithdrawnNotices = activeSession
     ? getSessionWithdrawnNotices(state, activeSession.sessionId)
     : [];
+  const sessionUsageGroups = activeSession
+    ? groupSessionUsage(state, activeSession.sessionId)
+    : [];
+
+  const handleSessionTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ) => {
+    if (sessions.length <= 1) return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % sessions.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + sessions.length) % sessions.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = sessions.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextSession = sessions[nextIndex];
+    onSelectSession(nextSession.sessionId);
+    tabRefs.current[nextSession.sessionId]?.focus();
+  };
 
   const handleOpenSessionSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -343,8 +386,10 @@ export function TaskWorkspace({
           {canManageTask ? (
             <div className="header-actions">
               <button
+                ref={openSessionBtnRef}
                 type="button"
                 className="btn"
+                aria-expanded={showOpenSession}
                 disabled={closeAllProgress !== null}
                 onClick={() => {
                   setOpenSessionError(null);
@@ -412,11 +457,19 @@ export function TaskWorkspace({
         <form
           className="open-session-panel"
           onSubmit={(e) => void handleOpenSessionSubmit(e)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !openingSession) {
+              e.preventDefault();
+              setShowOpenSession(false);
+              openSessionBtnRef.current?.focus();
+            }
+          }}
         >
           <div className="open-session-grid">
             <label className="form-field">
               <span className="form-label">{zhCN.openSession.modelLabel}</span>
               <input
+                ref={modelInputRef}
                 type="text"
                 className="form-input mono"
                 value={modelInput}
@@ -518,11 +571,18 @@ export function TaskWorkspace({
               return (
                 <button
                   key={session.sessionId}
+                  ref={(el) => {
+                    tabRefs.current[session.sessionId] = el;
+                  }}
+                  id={`session-tab-${session.sessionId}`}
                   type="button"
                   role="tab"
+                  tabIndex={selected ? 0 : -1}
                   aria-selected={selected}
+                  aria-controls={`session-panel-${session.sessionId}`}
                   className={classes}
                   onClick={() => onSelectSession(session.sessionId)}
+                  onKeyDown={(e) => handleSessionTabKeyDown(e, index)}
                 >
                   <span className="tabular">
                     {zhCN.overview.sessionLabel(index + 1)}
@@ -544,7 +604,12 @@ export function TaskWorkspace({
           </div>
 
           {activeSession ? (
-            <>
+            <div
+              id={`session-panel-${activeSession.sessionId}`}
+              role="tabpanel"
+              aria-labelledby={`session-tab-${activeSession.sessionId}`}
+              className="session-panel"
+            >
               {isOwn &&
               activeSession.state === "waiting_approval" &&
               sessionApprovals.length === 0 ? (
@@ -719,6 +784,8 @@ export function TaskWorkspace({
                 </div>
               ) : null}
 
+              <UsagePanel groups={sessionUsageGroups} turns={turns} />
+
               <ConversationStream
                 state={state}
                 turns={turns}
@@ -736,7 +803,7 @@ export function TaskWorkspace({
                   onInterruptTurn={onInterruptTurn}
                 />
               ) : null}
-            </>
+            </div>
           ) : null}
         </>
       )}

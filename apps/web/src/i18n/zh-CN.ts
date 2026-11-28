@@ -13,14 +13,24 @@ import type {
 export const zhCN = {
   app: {
     name: "QO",
+    skipToMain: "跳到主内容",
     documentTitle: (pendingCount: number) =>
       pendingCount > 0 ? `(${pendingCount}) QO` : "QO",
+    liveAttentionCount: (count: number) =>
+      count > 0 ? `当前有 ${count} 项需要你处理。` : "待处理项已全部处理完成。",
+    liveSessionState: (taskName: string, stateText: string) =>
+      `${taskName}，会话状态：${stateText}。`,
+    liveConnected: "已连接到本机服务。",
+    liveDisconnected: (attempt: number) =>
+      `连接已断开，正在自动重连（第 ${attempt} 次）。`,
   },
   connection: {
     connecting: "正在连接本机服务…",
     connected: (version: string) => `已连接 · ${version}`,
     reconnecting: (attempt: number, delaySeconds: number) =>
-      `连接已断开，${delaySeconds} 秒后进行第 ${attempt} 次重连…`,
+      delaySeconds > 0
+        ? `连接已断开，正在自动重连（第 ${attempt} 次，${delaySeconds} 秒后重试）…`
+        : `连接已断开，正在尝试第 ${attempt} 次重连…`,
     reconnectingShort: "重连中",
     authExpiredBanner:
       "登录状态已失效。请从托盘选择「在浏览器中打开」，或运行 qo open 重新打开。",
@@ -41,7 +51,7 @@ export const zhCN = {
     onlyMine: "只看我建的",
     tasksHeading: "任务列表",
     ungrouped: "未分组",
-    emptyTasks: "当前没有任务。",
+    emptyTasks: "当前没有任务，点击上方「新建任务」开始。",
     emptyFilteredTasks: "没有符合当前筛选条件的任务。",
     noSessions: "暂无会话",
     externalWaiting: "等外部客户端处理",
@@ -247,7 +257,7 @@ export const zhCN = {
     errorBody: "本机服务协议版本不匹配，无法同步状态。",
     noTasksTitle: "还没有任务",
     noTasksBody:
-      "点击「新建任务」开始第一个任务；由外部客户端创建的任务也会实时出现在左侧。",
+      "点击左侧或下方的「新建任务」，填好名字和目录后就能开会话发指令；外部客户端建的任务也会实时出现在左侧。",
     cwdLabel: "工作目录",
     forbiddenRootsLabel: "禁用目录",
     sessionsHeading: "会话",
@@ -268,15 +278,36 @@ export const zhCN = {
     sessionStatusLabel: "会话状态",
     sessionErrorLabel: "失败原因",
   },
+  usage: {
+    heading: "用量",
+    empty: "尚未收到用量上报。",
+    separateSourcesNote: "不同来源分开统计，不相加",
+    sourceLabel: "来源",
+    modelLabel: "模型",
+    reasoningEffortLabel: "推理力度",
+    serviceTierLabel: "服务档位",
+    turnIndex: (index: number) => `第 ${index} 轮`,
+    inputTokens: "输入",
+    outputTokens: "输出",
+    cachedInputTokens: "缓存",
+    cacheWriteInputTokens: "缓存写入",
+    reasoningOutputTokens: "推理输出",
+    totalTokens: "总计",
+    unavailable: "拿不到",
+  },
   errors: {
-    forbidden: "这个任务不是你建的，无法执行此操作。",
-    notFound: "找不到对应的任务、会话或轮次。",
-    conflict: "状态已变化，请刷新后确认再操作。",
-    invalidParams: "提交的参数不合法，请检查输入内容。",
-    approvalExpired: "该审批请求已过期。",
+    unsupportedVersion: "本机服务协议版本不匹配，无法连接。",
+    initializeRequired: "连接尚未完成初始化，请稍后重试。",
+    forbidden: "这个任务不是你建的。",
+    notFound: "找不到对应的任务、会话或请求。",
+    conflict: "状态已变化，请刷新。",
+    cursorExpired: "事件游标已过期，正在重新同步状态。",
     digestMismatch: "请求内容已变化。",
-    requestWithdrawn: "该请求已撤回。",
-    internalError: "本机服务内部操作失败，请稍后再试。",
+    approvalExpired: "该审批请求已过期，请续期后再决定。",
+    requestWithdrawn: "这个请求已撤回。",
+    methodNotFound: "当前本机服务不支持这项操作。",
+    invalidParams: "提交的参数不合法，请检查输入内容。",
+    internalError: "本机服务内部出错，请稍后再试。",
     fallback: (message: string) => `操作失败：${message}`,
     unknown: "操作失败，请稍后重试。",
   },

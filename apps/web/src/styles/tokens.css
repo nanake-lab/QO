@@ -14,10 +14,10 @@
   --border-default: #27272a;
   --border-strong: #3f3f46;
 
-  /* 文字颜色（全部满足深色背景 WCAG AA 对比度 >= 4.5:1） */
+  /* 文字颜色（全部满足含 #27272A 激活底在内的深色背景 WCAG AA 对比度 >= 4.5:1） */
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
-  --text-muted: #8a8a94;
+  --text-muted: #8e8e98;
 
   /* 唯一行动色：仅用于需要用户行动的等待批准、等待回答与确认取消按钮 */
   --color-action: #f59e0b;
