@@ -84,6 +84,7 @@ impl Notifications {
 }
 
 pub trait Backend: Send + Sync + 'static {
+    fn remember_secret(&self, _secret: &str) {}
     fn connected(&self, _peer: Peer, _out: Notifications) {}
     fn disconnected(&self, _peer: Peer) {}
     fn call(&self, peer: Peer, method: Method, params: Value) -> RpcResult;

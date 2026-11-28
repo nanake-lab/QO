@@ -1,4 +1,8 @@
 //! Codex JSONL callback routing. Replying is the responsibility of the task owner.
+mod adapter;
+mod tree;
+mod wire;
+pub use adapter::CodexFactory;
 pub mod generated;
 mod method;
 pub use method::Method;

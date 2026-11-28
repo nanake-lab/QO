@@ -1,0 +1,6 @@
+{"send": {"id": 3, "method": "turn/start", "params": {"threadId": "wire-1", "input": [{"type": "text", "text": "Reply with only the word READY. Do not use tools."}]}}}
+{"recv": {"id": 3, "result": {"turn": {"id": "wire-2", "rootTurnId": "wire-2", "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": null, "startedAt": null, "completedAt": null, "durationMs": null}}}}
+{"send": {"id": 4, "method": "turn/interrupt", "params": {"threadId": "wire-1", "turnId": "wire-2"}}}
+{"recv": {"method": "turn/started", "params": {"threadId": "wire-1", "turn": {"id": "wire-2", "status": "inProgress", "error": null}}, "emittedAtMs": 1795859421535}}
+{"recv": {"id": 4, "result": {}}}
+{"recv": {"method": "turn/completed", "params": {"threadId": "wire-1", "turn": {"id": "wire-2", "status": "interrupted", "error": null}}, "emittedAtMs": 1795859421653}}

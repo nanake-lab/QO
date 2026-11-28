@@ -13,8 +13,9 @@ fn params_are_checked_before_signing_a_link_or_dispatching_a_task() {
         browser: Arc::new(Mutex::new(BrowserSessions::new(Duration::from_secs(60)))),
     };
     let mut ready = false;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut call = |name, params| {
-        dispatch(
+        runtime.block_on(dispatch(
             &mut ready,
             name,
             params,
@@ -23,7 +24,7 @@ fn params_are_checked_before_signing_a_link_or_dispatching_a_task() {
                 role: Role::Desktop,
             },
             &service,
-        )
+        ))
     };
     assert_eq!(
         call("state.get", json!({})),

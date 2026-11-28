@@ -248,3 +248,390 @@ async fn withdrawal_reveals_waiting_input_and_secret_is_delivered_only_to_its_ca
         }
     }
 }
+
+struct SlowFactory(mpsc::Sender<()>, Mutex<mpsc::Receiver<()>>, Factory);
+impl HarnessFactory for SlowFactory {
+    fn name(&self) -> &str {
+        "slow"
+    }
+    fn start(&self, t: &Task, a: &SessionOpenParams, sink: EventSink) -> io::Result<Started> {
+        self.0.send(()).unwrap();
+        self.1
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        self.2.start(t, a, sink)
+    }
+}
+#[test]
+fn slow_start_releases_writer_and_live_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings::default();
+    let (entered, waiting) = mpsc::channel();
+    let (release, gate) = mpsc::channel();
+    let (events, _sink) = mpsc::channel();
+    let factory = SlowFactory(
+        entered,
+        Mutex::new(gate),
+        Factory(events, mpsc::channel().0),
+    );
+    let backend = ServiceBackend::new(
+        Store::open_in(dir.path(), &settings).unwrap(),
+        &settings,
+        dir.path().into(),
+        Some(Box::new(factory)),
+    )
+    .unwrap();
+    let peer = Peer {
+        id: 1,
+        role: Role::Browser,
+    };
+    let other = Peer { id: 2, ..peer };
+    let task = Uuid::new_v4().to_string();
+    let sid = Uuid::new_v4().to_string();
+    backend
+        .call(
+            peer,
+            Method::TaskCreate,
+            json!({"taskId":task,"name":"slow"}),
+        )
+        .unwrap();
+    let args = json!({"taskId":task,"sessionId":sid});
+    let worker = backend.clone();
+    let open = args.clone();
+    let startup = thread::spawn(move || worker.call(peer, Method::SessionOpen, open).unwrap());
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (done, verified) = mpsc::channel();
+    let worker = backend.clone();
+    let cancel = args.clone();
+    let observer = thread::spawn(move || {
+        assert_eq!(
+            worker.call(other, Method::StateGet, json!({})).unwrap()["sessions"][0]["state"],
+            "starting"
+        );
+        worker
+            .call(
+                other,
+                Method::TaskCreate,
+                json!({"taskId":Uuid::new_v4().to_string(),"name":"concurrent write"}),
+            )
+            .unwrap();
+        let cancelled = worker.call(other, Method::SessionCancel, cancel).unwrap();
+        done.send(cancelled).unwrap();
+    });
+    let cancelled = verified.recv_timeout(Duration::from_secs(3));
+    release.send(()).unwrap();
+    assert_eq!(startup.join().unwrap(), cancelled.unwrap());
+    observer.join().unwrap();
+    assert_eq!(
+        backend.call(peer, Method::SessionOpen, args).unwrap()["state"],
+        "cancelled"
+    );
+    assert!(backend.live.lock().unwrap().processes.is_empty());
+}
+
+#[test]
+#[ignore = "local SQLite throughput measurement; requires node on PATH"]
+fn command_output_measurement() {
+    use std::{
+        io::Read,
+        process::{Command, Stdio},
+        time::Instant,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    if let Ok(bytes) = std::env::var("QO_BENCH_BATCH_BYTES") {
+        settings.output_batch_bytes = bytes.parse().unwrap();
+    }
+    let (tx, rx) = mpsc::channel();
+    let backend = ServiceBackend::new(
+        Store::open_in(dir.path(), &settings).unwrap(),
+        &settings,
+        dir.path().into(),
+        Some(Box::new(Factory(tx, mpsc::channel().0))),
+    )
+    .unwrap();
+    let peer = Peer {
+        id: 1,
+        role: Role::Browser,
+    };
+    let uuid = || Uuid::new_v4().to_string();
+    let (task, sid, turn, item) = (uuid(), uuid(), uuid(), uuid());
+    backend
+        .call(
+            peer,
+            Method::TaskCreate,
+            json!({"taskId":task,"name":"output"}),
+        )
+        .unwrap();
+    backend
+        .call(
+            peer,
+            Method::SessionOpen,
+            json!({"taskId":task,"sessionId":sid}),
+        )
+        .unwrap();
+    backend
+        .call(
+            peer,
+            Method::TurnStart,
+            json!({"sessionId":sid,"turnId":turn,"input":"output"}),
+        )
+        .unwrap();
+    let sink = rx.recv().unwrap();
+    sink.send(HarnessEvent::Item(decode(json!({"kind":"command_execution","turnId":turn,"itemId":item,"state":"running","startedAt":now(),"content":{"command":"node output","output":""}})).unwrap())).unwrap();
+    let started = Instant::now();
+    let mut child = Command::new("node")
+        .args([
+            "-e",
+            "process.stdout.write('line of output!\\n'.repeat(262144))",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut bytes = [0; 4096];
+    let mut count = 0;
+    loop {
+        let n = stdout.read(&mut bytes).unwrap();
+        if n == 0 {
+            break;
+        }
+        count += n;
+        sink.send(HarnessEvent::Delta {
+            turn: turn.clone(),
+            delta: ItemDelta {
+                item_id: item.clone(),
+                delta: std::str::from_utf8(&bytes[..n]).unwrap().into(),
+            },
+        })
+        .unwrap();
+    }
+    assert!(child.wait().unwrap().success());
+    assert_eq!(count, 4 * 1024 * 1024);
+    sink.send(HarnessEvent::TurnEnded {
+        turn: turn.clone(),
+        state: TurnState::Completed,
+        error: None,
+    })
+    .unwrap();
+    loop {
+        let done = backend
+            .store
+            .read(|v| Ok(object::<Turn>(v, Projection::Turn, &turn)?.state == TurnState::Completed))
+            .unwrap();
+        if done {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(600));
+        thread::sleep(Duration::from_millis(10));
+    }
+    let elapsed = started.elapsed();
+    let events = backend
+        .store
+        .read(|v| {
+            let body: Value = object(v, Projection::Item, &item)?;
+            assert_eq!(
+                body["content"]["output"].as_str().unwrap(),
+                "line of output!\n".repeat(262144)
+            );
+            Ok(v.db.query_row(
+                "SELECT count(*) FROM events WHERE kind='item.delta'",
+                [],
+                |r| r.get::<_, u64>(0),
+            )?)
+        })
+        .unwrap();
+    println!("{count} bytes: {elapsed:?}, {events} public deltas");
+}
+
+#[test]
+fn split_credentials_are_filtered_in_live_deltas_replay_and_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings::default();
+    let (tx, rx) = mpsc::channel();
+    let backend = ServiceBackend::new(
+        Store::open_in(dir.path(), &settings).unwrap(),
+        &settings,
+        dir.path().into(),
+        Some(Box::new(Factory(tx, mpsc::channel().0))),
+    )
+    .unwrap();
+    let peer = Peer {
+        id: 1,
+        role: Role::Browser,
+    };
+    let uuid = || Uuid::new_v4().to_string();
+    let (task, sid, turn, item) = (uuid(), uuid(), uuid(), uuid());
+    let secret = "private split credential";
+    backend.remember_secret(secret);
+    backend
+        .call(
+            peer,
+            Method::TaskCreate,
+            json!({"taskId":task,"name":"filter"}),
+        )
+        .unwrap();
+    backend
+        .call(
+            peer,
+            Method::SessionOpen,
+            json!({"taskId":task,"sessionId":sid}),
+        )
+        .unwrap();
+    backend
+        .call(
+            peer,
+            Method::TurnStart,
+            json!({"sessionId":sid,"turnId":turn,"input":secret}),
+        )
+        .unwrap();
+    let sink = rx.recv().unwrap();
+    sink.send(HarnessEvent::Item(decode(json!({"kind":"command_execution","turnId":turn,"itemId":item,"state":"running","startedAt":now(),"content":{"command":secret,"output":""}})).unwrap())).unwrap();
+    let prefix = "safe ".repeat(40);
+    sink.send(HarnessEvent::Delta {
+        turn: turn.clone(),
+        delta: ItemDelta {
+            item_id: item.clone(),
+            delta: format!("{prefix}private split"),
+        },
+    })
+    .unwrap();
+    // A different notification forces the two chunks into distinct write batches.
+    sink.send(HarnessEvent::Rerouted {
+        model: "rerouted".into(),
+    })
+    .unwrap();
+    sink.send(HarnessEvent::Delta {
+        turn: turn.clone(),
+        delta: ItemDelta {
+            item_id: item.clone(),
+            delta: " credential done".into(),
+        },
+    })
+    .unwrap();
+    sink.send(HarnessEvent::TurnEnded {
+        turn: turn.clone(),
+        state: TurnState::Completed,
+        error: None,
+    })
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = backend.call(peer, Method::StateGet, json!({})).unwrap();
+        if state["turns"][0]["state"] == "completed" {
+            assert_eq!(state["turns"][0]["input"], "[redacted]");
+            assert_eq!(
+                state["items"][0]["content"]["output"],
+                format!("{prefix}[redacted] done")
+            );
+            assert_eq!(state["items"][0]["content"]["command"], "[redacted]");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        thread::yield_now();
+    }
+    let mut replay = backend.store.begin_replay(0).unwrap();
+    let mut output = String::new();
+    loop {
+        let page = replay.next_page().unwrap();
+        if page.is_empty() {
+            break;
+        }
+        for e in page {
+            assert!(!e.to_string().contains("private split"));
+            if e["kind"] == "item.delta" {
+                output.push_str(e["payload"]["delta"].as_str().unwrap());
+            }
+        }
+    }
+    assert_eq!(output, format!("{prefix}[redacted] done"));
+}
+
+#[test]
+#[ignore = "uses the locally installed pinned Codex; no model turn"]
+fn real_codex_handshake_and_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings::default();
+    let backend = ServiceBackend::new(
+        Store::open_in(dir.path(), &settings).unwrap(),
+        &settings,
+        dir.path().into(),
+        Some(Box::new(settings.codex_factory(dir.path()))),
+    )
+    .unwrap();
+    let peer = Peer {
+        id: 1,
+        role: Role::Browser,
+    };
+    let (task, sid) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    backend
+        .call(
+            peer,
+            Method::TaskCreate,
+            json!({"taskId":task,"name":"handshake","cwd":work}),
+        )
+        .unwrap();
+    let args = json!({"taskId":task,"sessionId":sid});
+    let session = backend
+        .call(peer, Method::SessionOpen, args.clone())
+        .unwrap();
+    assert_eq!(session["state"], "idle", "{}", session["error"]);
+    assert_eq!(session["harnessVersion"], "0.162.1");
+    assert!(dir.path().join("codex").is_dir());
+    assert_eq!(
+        backend.call(peer, Method::SessionFinish, args).unwrap()["state"],
+        "completed"
+    );
+}
+
+#[test]
+fn configured_cli_version_mismatch_is_a_failed_session_with_both_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings {
+        codex_path: "node".into(),
+        ..Default::default()
+    };
+    let backend = ServiceBackend::new(
+        Store::open_in(dir.path(), &settings).unwrap(),
+        &settings,
+        dir.path().into(),
+        Some(Box::new(settings.codex_factory(dir.path()))),
+    )
+    .unwrap();
+    let peer = Peer {
+        id: 1,
+        role: Role::Browser,
+    };
+    let (task, sid) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    backend
+        .call(
+            peer,
+            Method::TaskCreate,
+            json!({"taskId":task,"name":"wrong version","cwd":dir.path()}),
+        )
+        .unwrap();
+    let result = backend
+        .call(
+            peer,
+            Method::SessionOpen,
+            json!({"taskId":task,"sessionId":sid}),
+        )
+        .unwrap();
+    assert_eq!(result["state"], "failed");
+    let node = std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .unwrap();
+    let actual = String::from_utf8(node.stdout).unwrap();
+    assert_eq!(
+        result["error"],
+        format!(
+            "Codex version mismatch: expected 0.162.1, actual {}",
+            actual.trim()
+        )
+    );
+}

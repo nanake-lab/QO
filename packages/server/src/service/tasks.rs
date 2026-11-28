@@ -11,7 +11,6 @@ impl ServiceBackend {
         p: Value,
     ) -> Result<Value> {
         let params_hash = hash(&p);
-        let mut process = None;
         let (reply, fresh) = self.commit(l, |c| {
             let (task, id) = match m {
                 Method::TaskCreate => {
@@ -23,11 +22,6 @@ impl ServiceBackend {
                         l.owns(c.tx, peer, task)?;
                     }
                     (task.to_owned(), task)
-                }
-                Method::SessionOpen => {
-                    let task = p["taskId"].as_str().unwrap();
-                    l.owns(c.tx, peer, task)?;
-                    (task.to_owned(), p["sessionId"].as_str().unwrap())
                 }
                 Method::TurnStart | Method::TurnAppend => {
                     let s: Session =
@@ -61,18 +55,13 @@ impl ServiceBackend {
             }
             let value = match m {
                 Method::TaskCreate => self.create_task(c, peer, decode(p.clone())?, params_hash)?,
-                Method::SessionOpen => {
-                    let (session, handle) = self.open_session(c, decode(p.clone())?)?;
-                    process = handle;
-                    session
-                }
-                Method::TurnStart => Self::start_turn(c, decode(p.clone())?)?,
+                Method::TurnStart => self.start_turn(c, decode(p.clone())?)?,
                 Method::TurnAppend => {
                     let args: TurnAppendParams = decode(p.clone())?;
                     let s: Session = object(c.tx, Projection::Session, &args.session_id)?;
                     let mut t = active_turn(c.tx, &s.session_id, &args.turn_id)?;
                     t.input.push('\n');
-                    t.input.push_str(&public_text(&args.input));
+                    t.input.push_str(&self.secrets.text(&args.input));
                     c.turn(&s, &t)?
                 }
                 _ => unreachable!(),
@@ -85,12 +74,6 @@ impl ServiceBackend {
                 Method::TaskCreate if peer.role == Role::External => {
                     l.holders
                         .insert(p["taskId"].as_str().unwrap().into(), peer.id);
-                }
-                Method::SessionOpen => {
-                    if let Some(h) = process {
-                        l.processes
-                            .insert(p["sessionId"].as_str().unwrap().into(), h);
-                    }
                 }
                 Method::TurnStart | Method::TurnAppend => {
                     let sid = p["sessionId"].as_str().unwrap();
@@ -128,18 +111,18 @@ impl ServiceBackend {
         )?;
         c.task(&Task {
             task_id: id.clone(),
-            name: public_text(&args.name),
-            group: args.group.as_deref().map(public_text),
+            name: self.secrets.text(&args.name),
+            group: args.group.as_deref().map(|s| self.secrets.text(s)),
             cwd: args
                 .cwd
                 .as_deref()
-                .map(public_text)
+                .map(|s| self.secrets.text(s))
                 .unwrap_or_else(|| self.workspaces.join(id).to_string_lossy().into_owned()),
             forbidden_roots: args
                 .forbidden_roots
                 .unwrap_or_default()
                 .iter()
-                .map(|s| public_text(s))
+                .map(|s| self.secrets.text(s))
                 .collect(),
             created_by: if peer.role == Role::Browser {
                 Creator::Ui
@@ -151,60 +134,71 @@ impl ServiceBackend {
             closed_at: None,
         })
     }
-    fn open_session(
-        &self,
-        c: &mut Change<'_, '_>,
-        args: SessionOpenParams,
-    ) -> Result<(Value, Option<Box<dyn Harness>>)> {
-        let task: Task = object(c.tx, Projection::Task, &args.task_id)?;
-        if task.state != TaskState::Open {
-            return Err(ErrorReason::Conflict.into());
-        }
-        let mut s = Session {
-            session_id: args.session_id.clone(),
-            task_id: task.task_id.clone(),
-            harness: self
-                .factory
-                .as_ref()
-                .map_or("unconfigured", |f| f.name())
-                .into(),
-            harness_version: "unavailable".into(),
-            model: None,
-            reasoning_effort: None,
-            service_tier: None,
-            state: SessionState::Starting,
-            created_at: now(),
-            error: None,
-            cancelled_by: None,
-            ended_at: None,
+    pub(super) fn open_session(&self, peer: Peer, args: Value) -> Result<Value> {
+        let fingerprint = hash(&args);
+        let args: SessionOpenParams = decode(args)?;
+        let key = storage::RequestKey {
+            id: &args.session_id,
+            method: "session.open",
+            task: &args.task_id,
+            approval: None,
+            params_hash: &fingerprint,
         };
-        let mut process = None;
-        let sink = EventSink::new(args.session_id.clone(), self.events.clone());
-        let started = self.factory.as_ref().map(|f| f.start(&task, &args, sink));
-        if let Some(Ok(h)) = started {
-            s.harness_version = public_text(&h.version);
-            s.model = h.model.as_deref().map(public_text);
-            s.reasoning_effort = h.reasoning_effort.as_deref().map(public_text);
-            s.service_tier = h.service_tier.as_deref().map(public_text);
-            c.session(&s)?;
-            s.state = SessionState::Idle;
-            process = Some(h.process);
-        } else {
-            c.session(&s)?;
-            s.state = SessionState::Failed;
-            s.ended_at = Some(now());
-            s.error = Some(
-                if self.factory.is_none() {
-                    "harness_unavailable"
-                } else {
-                    "harness_start_failed"
-                }
-                .into(),
-            );
+        let mut live = self.live.lock().unwrap();
+        let task = self.commit(&live, |c| {
+            live.owns(c.tx, peer, &args.task_id)?;
+            if c.tx.first_reply(&key)?.is_some() {
+                return Ok(None);
+            }
+            if issued(c.tx, &args.session_id)? {
+                return Err(ErrorReason::Conflict.into());
+            }
+            let task: Task = object(c.tx, Projection::Task, &args.task_id)?;
+            if task.state != TaskState::Open {
+                return Err(ErrorReason::Conflict.into());
+            }
+            let s = Session {
+                session_id: args.session_id.clone(),
+                task_id: task.task_id.clone(),
+                harness: self
+                    .factory
+                    .as_ref()
+                    .map_or("unconfigured", |f| f.name())
+                    .into(),
+                harness_version: "unavailable".into(),
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                state: SessionState::Starting,
+                created_at: now(),
+                error: None,
+                cancelled_by: None,
+                ended_at: None,
+            };
+            let pending = c.session(&s)?;
+            c.tx.record_reply(&key, &pending)?;
+            Ok(Some(task))
+        })?;
+        if let Some(task) = task {
+            let mut sink = EventSink::new(args.session_id.clone(), self.events.clone());
+            sink.secrets = self.secrets.clone();
+            live.starting
+                .insert(args.session_id.clone(), (sink.clone(), Vec::new()));
+            drop(live);
+            let started = match &self.factory {
+                Some(f) => f.start(&task, &args, sink.clone()),
+                None => Err(io::Error::other("harness_unavailable")),
+            };
+            sink.send(HarnessEvent::Started(started))?;
+            live = self.live.lock().unwrap();
         }
-        Ok((c.session(&s)?, process))
+        while live.starting.contains_key(&args.session_id) {
+            live = self.ready.wait(live).unwrap();
+        }
+        self.store
+            .write(|db| db.first_reply(&key)?.ok_or(storage::Error::InvalidEvent))
     }
-    fn start_turn(c: &mut Change<'_, '_>, args: TurnStartParams) -> Result<Value> {
+    fn start_turn(&self, c: &mut Change<'_, '_>, args: TurnStartParams) -> Result<Value> {
         let mut s: Session = object(c.tx, Projection::Session, &args.session_id)?;
         if s.state != SessionState::Idle {
             return Err(ErrorReason::Conflict.into());
@@ -216,7 +210,7 @@ impl ServiceBackend {
             &Turn {
                 turn_id: args.turn_id,
                 session_id: args.session_id,
-                input: public_text(&args.input),
+                input: self.secrets.text(&args.input),
                 state: TurnState::Running,
                 started_at: now(),
                 ended_at: None,
@@ -283,9 +277,14 @@ impl ServiceBackend {
             }
             Ok(s)
         })?;
-        let h = l.processes.get_mut(sid).ok_or(ErrorReason::InternalError)?;
+        let mut process = l.processes.get_mut(sid);
         let (state, by, error) = if cancel {
-            h.terminate();
+            if let Some((sink, _)) = l.starting.remove(sid) {
+                sink.cancel_start();
+            }
+            if let Some(h) = process {
+                h.terminate();
+            }
             (
                 SessionState::Cancelled,
                 Some(if peer.role == Role::Browser {
@@ -295,14 +294,18 @@ impl ServiceBackend {
                 }),
                 None,
             )
-        } else if h.finish().is_ok() {
+        } else if process.as_mut().is_some_and(|h| h.finish().is_ok()) {
             (SessionState::Completed, None, None)
         } else {
-            h.terminate();
+            if let Some(h) = process {
+                h.terminate();
+            }
             (SessionState::Failed, None, Some("harness_lost".into()))
         };
+        self.flush_streams(l, &s, None, None)?;
         let result = self.commit(l, |c| c.end(s, state, error, by))?;
         l.forget_session(sid);
+        self.ready.notify_all();
         Ok(result)
     }
     pub(super) fn interrupt(
@@ -326,6 +329,7 @@ impl ServiceBackend {
             self.fail(l, &p.session_id, "harness_lost")?;
             return Err(ErrorReason::InternalError.into());
         }
+        self.flush_streams(l, &s, Some(&p.turn_id), None)?;
         let result = self.commit(l, |c| {
             let result = c.end_turn(&s, t, TurnState::Interrupted)?;
             c.waiting_state(s)?;
