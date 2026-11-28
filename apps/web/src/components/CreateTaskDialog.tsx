@@ -160,7 +160,11 @@ export function CreateTaskDialog({
               className="btn btn-primary"
               disabled={submitting}
             >
-              {submitting ? zhCN.createTask.submitting : zhCN.createTask.submit}
+              {submitting
+                ? isConnected
+                  ? zhCN.createTask.submitting
+                  : zhCN.createTask.queued
+                : zhCN.createTask.submit}
             </button>
           </div>
         </form>

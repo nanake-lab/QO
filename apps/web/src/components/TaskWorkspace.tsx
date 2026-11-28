@@ -1,6 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type {
+  ApprovalDecideParams,
+  ApprovalRequest,
   Id,
+  InputAnswerParams,
+  InputRequested,
   Session,
   SessionOpenParams,
   Task,
@@ -13,13 +17,19 @@ import { buildSessionOpenParams, formatRpcError } from "../format.js";
 import { zhCN } from "../i18n/zh-CN.js";
 import { isQoRpcError } from "../protocol.js";
 import {
+  getSessionApprovalDecisions,
+  getSessionApprovals,
+  getSessionInputs,
   getSessionTurns,
+  getSessionWithdrawnNotices,
   getTaskSessions,
   isTerminalSessionState,
   type AppState,
 } from "../state.js";
+import { ApprovalCard } from "./ApprovalCard.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { ConversationStream } from "./ConversationStream.js";
+import { InputCard } from "./InputCard.js";
 import { TurnComposer } from "./TurnComposer.js";
 
 interface TaskWorkspaceProps {
@@ -36,6 +46,16 @@ interface TaskWorkspaceProps {
   readonly onStartTurn: (params: TurnStartParams) => Promise<void>;
   readonly onAppendTurn: (params: TurnAppendParams) => Promise<void>;
   readonly onInterruptTurn: (params: TurnInterruptParams) => Promise<void>;
+  readonly onDecideApproval: (
+    request: ApprovalRequest,
+    params: ApprovalDecideParams,
+  ) => Promise<void>;
+  readonly onRenewApproval: (request: ApprovalRequest) => Promise<void>;
+  readonly onRefreshApprovals: (taskId: Id) => Promise<void>;
+  readonly onAnswerInput: (
+    request: InputRequested,
+    params: InputAnswerParams,
+  ) => Promise<void>;
 }
 
 function sessionStatusText(task: Task, session: Session): string {
@@ -62,6 +82,10 @@ export function TaskWorkspace({
   onStartTurn,
   onAppendTurn,
   onInterruptTurn,
+  onDecideApproval,
+  onRenewApproval,
+  onRefreshApprovals,
+  onAnswerInput,
 }: TaskWorkspaceProps) {
   const [showOpenSession, setShowOpenSession] = useState(false);
   const [modelInput, setModelInput] = useState("");
@@ -106,6 +130,33 @@ export function TaskWorkspace({
 
   const isConnected = connectionStatus.kind === "connected";
   const totalTasks = Object.keys(state.tasks).length;
+  const isOwn = selectedTask?.createdBy === "ui";
+  const sessions = selectedTask
+    ? getTaskSessions(state, selectedTask.taskId)
+    : [];
+  const activeSession =
+    sessions.find((s) => s.sessionId === selectedSessionId) ??
+    sessions[0] ??
+    null;
+  const sessionApprovals =
+    isOwn && activeSession
+      ? getSessionApprovals(state, activeSession.sessionId)
+      : [];
+
+  // 自己的会话处于 waiting_approval 但内存无对应审批卡（如离线期间已过期未重发）时，用 approval.list 拉回。
+  const needsApprovalSync =
+    isConnected &&
+    isOwn &&
+    activeSession !== null &&
+    activeSession.state === "waiting_approval" &&
+    sessionApprovals.length === 0;
+  const syncSessionId = activeSession?.sessionId ?? null;
+  useEffect(() => {
+    if (!needsApprovalSync || !taskId || !syncSessionId) return;
+    void onRefreshApprovals(taskId).catch(() => {
+      // 网络波动时忽略，下次状态变化或重连会再次同步。
+    });
+  }, [needsApprovalSync, taskId, syncSessionId, onRefreshApprovals]);
 
   if (!selectedTask) {
     let title: string = zhCN.overview.noSelectionTitle;
@@ -150,22 +201,26 @@ export function TaskWorkspace({
     );
   }
 
-  const isOwn = selectedTask.createdBy === "ui";
   const isClosed = selectedTask.state === "closed";
   const canManageTask = isOwn && !isClosed;
 
-  const sessions = getTaskSessions(state, selectedTask.taskId);
   const activeSessions = sessions.filter(
     (s) => !isTerminalSessionState(s.state),
   );
-  const activeSession =
-    sessions.find((s) => s.sessionId === selectedSessionId) ??
-    sessions[0] ??
-    null;
   const turns = activeSession
     ? getSessionTurns(state, activeSession.sessionId)
     : [];
   const runningTurn = turns.find((t) => t.state === "running") ?? null;
+  const sessionInputs =
+    isOwn && activeSession
+      ? getSessionInputs(state, activeSession.sessionId)
+      : [];
+  const sessionApprovalDecisions = activeSession
+    ? getSessionApprovalDecisions(state, activeSession.sessionId)
+    : [];
+  const sessionWithdrawnNotices = activeSession
+    ? getSessionWithdrawnNotices(state, activeSession.sessionId)
+    : [];
 
   const handleOpenSessionSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -425,7 +480,9 @@ export function TaskWorkspace({
               disabled={openingSession}
             >
               {openingSession
-                ? zhCN.openSession.submitting
+                ? isConnected
+                  ? zhCN.openSession.submitting
+                  : zhCN.openSession.queued
                 : zhCN.openSession.submit}
             </button>
           </div>
@@ -488,13 +545,17 @@ export function TaskWorkspace({
 
           {activeSession ? (
             <>
-              {isOwn && activeSession.state === "waiting_approval" ? (
+              {isOwn &&
+              activeSession.state === "waiting_approval" &&
+              sessionApprovals.length === 0 ? (
                 <div className="notice-bar notice-bar-action" role="status">
-                  {zhCN.overview.waitingYourApproval}
+                  {zhCN.approval.loadingPending}
                 </div>
               ) : null}
 
-              {isOwn && activeSession.state === "waiting_input" ? (
+              {isOwn &&
+              activeSession.state === "waiting_input" &&
+              sessionInputs.length === 0 ? (
                 <div className="notice-bar notice-bar-action" role="status">
                   {zhCN.overview.waitingYourInput}
                 </div>
@@ -625,7 +686,45 @@ export function TaskWorkspace({
                 ) : null}
               </section>
 
-              <ConversationStream state={state} turns={turns} />
+              {isOwn && sessionApprovals.length > 0 ? (
+                <div className="action-cards-stack">
+                  {sessionApprovals.map((approval) => (
+                    <ApprovalCard
+                      key={approval.approvalId}
+                      approval={approval}
+                      linkedItem={
+                        approval.itemId
+                          ? (state.items[approval.itemId] ?? null)
+                          : null
+                      }
+                      isConnected={isConnected}
+                      onDecide={onDecideApproval}
+                      onRenew={onRenewApproval}
+                      onRefreshList={onRefreshApprovals}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              {isOwn && sessionInputs.length > 0 ? (
+                <div className="action-cards-stack">
+                  {sessionInputs.map((inputReq) => (
+                    <InputCard
+                      key={inputReq.requestId}
+                      request={inputReq}
+                      isConnected={isConnected}
+                      onSubmit={onAnswerInput}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              <ConversationStream
+                state={state}
+                turns={turns}
+                approvalDecisions={sessionApprovalDecisions}
+                withdrawnNotices={sessionWithdrawnNotices}
+              />
 
               {canManageTask && !isTerminalSessionState(activeSession.state) ? (
                 <TurnComposer
