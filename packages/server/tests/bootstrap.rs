@@ -23,6 +23,7 @@ const SERVER: &str = env!("CARGO_BIN_EXE_qo-server");
 fn isolated(root: &Path, binary: &str) -> Command {
     let mut cmd = Command::new(binary);
     cmd.env("LOCALAPPDATA", root)
+        .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_RUNTIME_DIR", root.join("run"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("HOME", root);
@@ -325,4 +326,39 @@ fn qo_open_hands_a_fresh_authenticated_url_to_the_default_browser() {
         assert_eq!(exchange(port, code, &origin).0, 403);
         fs::remove_file(&received).unwrap();
     }
+}
+
+#[test]
+fn newer_database_stops_real_service_before_discovery() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join(if cfg!(windows) {
+        "QO/state"
+    } else {
+        "state/qo"
+    });
+    fs::create_dir_all(&state).unwrap();
+    let db = rusqlite::Connection::open(state.join("qo.sqlite3")).unwrap();
+    db.execute_batch("PRAGMA user_version = 2").unwrap();
+    drop(db);
+    let mut server = Server(
+        isolated(root.path(), SERVER)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = server.0.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline, "service accepted a newer schema");
+        thread::sleep(Duration::from_millis(25));
+    }
+    let error = std::io::read_to_string(server.0.stderr.take().unwrap()).unwrap();
+    assert!(
+        error.contains("Version(2)") || error.contains("database version 2"),
+        "{error}"
+    );
+    assert!(!endpoint(root.path()).exists());
 }

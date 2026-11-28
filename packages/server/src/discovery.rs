@@ -25,29 +25,32 @@ fn env_path(name: &str) -> io::Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn paths() -> io::Result<(PathBuf, PathBuf)> {
+fn paths() -> io::Result<(PathBuf, PathBuf, PathBuf)> {
     let base = env_path("LOCALAPPDATA")?.join("QO");
-    Ok((base.join("run"), base.join("config")))
+    Ok((base.join("run"), base.join("config"), base.join("state")))
 }
 
 #[cfg(unix)]
-fn paths() -> io::Result<(PathBuf, PathBuf)> {
+fn paths() -> io::Result<(PathBuf, PathBuf, PathBuf)> {
     let home = env_path("HOME")?;
+    let state = env_path("XDG_STATE_HOME")
+        .unwrap_or_else(|_| home.join(".local/state"))
+        .join("qo");
     let runtime = env_path("XDG_RUNTIME_DIR")
         .map(|p| p.join("qo"))
-        .unwrap_or_else(|_| {
-            env_path("XDG_STATE_HOME")
-                .unwrap_or_else(|_| home.join(".local/state"))
-                .join("qo/run")
-        });
+        .unwrap_or_else(|_| state.join("run"));
     let config = env_path("XDG_CONFIG_HOME")
         .unwrap_or_else(|_| home.join(".config"))
         .join("qo");
-    Ok((runtime, config))
+    Ok((runtime, config, state))
 }
 
 pub fn runtime_dir() -> io::Result<PathBuf> {
     Ok(paths()?.0)
+}
+
+pub(crate) fn state_dir() -> io::Result<PathBuf> {
+    Ok(paths()?.2)
 }
 
 #[derive(Deserialize)]
@@ -55,6 +58,8 @@ pub fn runtime_dir() -> io::Result<PathBuf> {
 pub struct Settings {
     pub port: u16,
     pub login_link_seconds: u64,
+    pub event_retention_days: u64,
+    pub event_retention_bytes: u64,
 }
 
 impl Default for Settings {
@@ -64,6 +69,8 @@ impl Default for Settings {
         Self {
             port: 47261,
             login_link_seconds: 120,
+            event_retention_days: 7, // Cover clients offline over a weekend.
+            event_retention_bytes: 256 * 1024 * 1024, // Bound disk use from high-frequency output.
         }
     }
 }
