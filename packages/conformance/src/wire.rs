@@ -94,7 +94,7 @@ impl Client {
             assert_eq!(approval_digest(&a), a.digest, "approval digest");
         }
     }
-    fn request(&mut self, name: &str, params: Value) -> Result<Value, Value> {
+    pub(crate) fn send_request(&mut self, name: &str, params: Value) {
         assert!(
             validate_params(name, &params),
             "invalid test input for {name}"
@@ -107,6 +107,9 @@ impl Client {
                     .into(),
             ))
             .unwrap();
+    }
+    fn request(&mut self, name: &str, params: Value) -> Result<Value, Value> {
+        self.send_request(name, params);
         let deadline = Instant::now() + Duration::from_secs(12);
         loop {
             assert!(Instant::now() < deadline, "no reply to {name}");

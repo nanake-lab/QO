@@ -108,6 +108,21 @@ impl Client {
 fn start_mock(root: &Path) -> Process {
     start_mock_with(root, &[])
 }
+
+#[test]
+fn seeded_external_approval_is_ready_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let _service = start_mock_with(dir.path(), &["--seed", "external"]);
+    let mut observer = Client::new(dir.path());
+    let state = observer.call("state.get", json!({}));
+    assert_eq!(state["tasks"][0]["createdBy"], "external");
+    assert_eq!(state["sessions"][0]["state"], "waiting_approval");
+    observer.rejected(
+        "approval.list",
+        json!({"taskId":state["tasks"][0]["taskId"]}),
+        "forbidden",
+    );
+}
 fn start_mock_with(root: &Path, options: &[&str]) -> Process {
     let child = Command::new(env!("CARGO_BIN_EXE_qo-mock"))
         .args(["--port", "0", "--root"])

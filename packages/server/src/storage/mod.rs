@@ -27,6 +27,13 @@ pub enum Error {
     Conflict,
     #[error("expected a public event object")]
     InvalidEvent,
+    #[error("RPC rejected: {0:?}")]
+    Rejected(qo_protocol::ErrorReason),
+}
+impl From<qo_protocol::ErrorReason> for Error {
+    fn from(reason: qo_protocol::ErrorReason) -> Self {
+        Self::Rejected(reason)
+    }
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -35,6 +42,7 @@ pub struct Store {
     writer: Mutex<Connection>,
     retention_days: u64,
     retention_bytes: u64,
+    count_limit: Option<u64>,
 }
 
 impl Store {
@@ -42,21 +50,24 @@ impl Store {
         Self::open_in(&discovery::state_dir()?, settings)
     }
 
-    fn open_in(dir: &Path, settings: &Settings) -> Result<Self> {
+    pub fn open_in(dir: &Path, settings: &Settings) -> Result<Self> {
         discovery::private_dir(dir)?;
         let path = dir.join("qo.sqlite3");
         let mut db = Connection::open(&path)?;
         let version = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !matches!(version, 0 | 1) {
+        if !matches!(version, 0..=2) {
             return Err(Error::Version(version));
         }
         let mode: String = db.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         if mode != "wal" {
             return Err(std::io::Error::other("SQLite WAL unavailable").into());
         }
-        if version == 0 {
+        if version < 2 {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch(include_str!("v1.sql"))?;
+            if version == 0 {
+                tx.execute_batch(include_str!("v1.sql"))?;
+            }
+            tx.execute_batch(include_str!("v2.sql"))?;
             tx.commit()?;
         }
         let store = Self {
@@ -64,10 +75,16 @@ impl Store {
             writer: Mutex::new(db),
             retention_days: settings.event_retention_days,
             retention_bytes: settings.event_retention_bytes,
+            count_limit: None,
         };
         // Apply elapsed time and changed limits before the first replay after restart.
         store.write(|_| Ok(()))?;
         Ok(store)
+    }
+
+    /// Count-based retention for explicit scenario launchers. Normal service settings use age and bytes.
+    pub fn limit_event_count(&mut self, limit: Option<u64>) {
+        self.count_limit = limit;
     }
 
     pub fn write<T>(&self, change: impl FnOnce(&Write<'_>) -> Result<T>) -> Result<T> {
@@ -89,7 +106,23 @@ impl Store {
         query(&View { db: &tx })
     }
 
+    pub(crate) fn begin_replay(&self, after: u64) -> Result<Replay> {
+        let db = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // The socket owns this WAL read transaction until it drains the replay or disconnects.
+        db.execute_batch("BEGIN")?;
+        let view = View { db: &db };
+        let high = view.high_water()?;
+        view.check_range(after, high, high)?;
+        Ok(Replay { db, after, high })
+    }
+
     fn prune(&self, db: &Connection) -> Result<()> {
+        if let Some(limit) = self.count_limit {
+            db.execute(
+                "DELETE FROM events WHERE cursor <= (SELECT high_water FROM metadata) - ?",
+                [limit.min(i64::MAX as u64)],
+            )?;
+        }
         let seconds = self
             .retention_days
             .saturating_mul(86400)
@@ -119,7 +152,22 @@ impl Store {
 }
 
 pub struct View<'a> {
-    db: &'a Connection,
+    pub(crate) db: &'a Connection,
+}
+pub(crate) struct Replay {
+    db: Connection,
+    after: u64,
+    high: u64,
+}
+impl Replay {
+    pub(crate) fn next_page(&mut self) -> Result<Vec<Value>> {
+        // Amortize SQL reads without buffering an offline client's entire history.
+        const PAGE_SIZE: u64 = 64;
+        let through = self.high.min(self.after.saturating_add(PAGE_SIZE));
+        let events = View { db: &self.db }.events(self.after, through)?;
+        self.after = through;
+        Ok(events)
+    }
 }
 pub struct Write<'a>(View<'a>);
 
@@ -188,7 +236,11 @@ impl View<'_> {
 
     /// Read (after, through] using the same WAL snapshot for bounds and events.
     pub fn replay(&self, after: u64, through: u64) -> Result<Vec<Value>> {
-        let high = self.high_water()?;
+        self.check_range(after, through, self.high_water()?)?;
+        self.events(after, through)
+    }
+
+    fn check_range(&self, after: u64, through: u64, high: u64) -> Result<()> {
         if after > through || through > high {
             return Err(Error::InvalidCursor);
         }
@@ -199,6 +251,10 @@ impl View<'_> {
         if after < oldest - 1 {
             return Err(Error::CursorExpired { oldest, high });
         }
+        Ok(())
+    }
+
+    fn events(&self, after: u64, through: u64) -> Result<Vec<Value>> {
         let mut stmt = self
             .db
             .prepare("SELECT body FROM events WHERE cursor > ? AND cursor <= ? ORDER BY cursor")?;

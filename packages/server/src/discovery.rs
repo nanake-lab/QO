@@ -49,8 +49,24 @@ pub fn runtime_dir() -> io::Result<PathBuf> {
     Ok(paths()?.0)
 }
 
+pub fn private_dirs() -> io::Result<[PathBuf; 3]> {
+    let (run, config, state) = paths()?;
+    Ok([run, config, state])
+}
+
 pub(crate) fn state_dir() -> io::Result<PathBuf> {
     Ok(paths()?.2)
+}
+
+#[cfg(feature = "embedded-web")]
+pub(crate) fn workspaces() -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    let base = env_path("LOCALAPPDATA")?.join("QO");
+    #[cfg(unix)]
+    let base = env_path("XDG_DATA_HOME")
+        .or_else(|_| env_path("HOME").map(|p| p.join(".local/share")))?
+        .join("qo");
+    Ok(base.join("workspaces"))
 }
 
 #[derive(Deserialize)]
@@ -60,6 +76,7 @@ pub struct Settings {
     pub login_link_seconds: u64,
     pub event_retention_days: u64,
     pub event_retention_bytes: u64,
+    pub approval_ttl_seconds: u64,
 }
 
 impl Default for Settings {
@@ -71,6 +88,7 @@ impl Default for Settings {
             login_link_seconds: 120,
             event_retention_days: 7, // Cover clients offline over a weekend.
             event_retention_bytes: 256 * 1024 * 1024, // Bound disk use from high-frequency output.
+            approval_ttl_seconds: 600, // Ten minutes to inspect an operation before renewal.
         }
     }
 }
@@ -90,7 +108,28 @@ impl Settings {
         {
             return Err(io::Error::other("invalid QO port or loginLinkSeconds"));
         }
+        if settings.event_retention_days == 0 || settings.event_retention_bytes == 0 {
+            return Err(io::Error::other(
+                "eventRetentionDays and eventRetentionBytes must be positive",
+            ));
+        }
+        settings.approval_ttl()?;
         Ok(settings)
+    }
+
+    pub(crate) fn approval_ttl(&self) -> io::Result<chrono::TimeDelta> {
+        i64::try_from(self.approval_ttl_seconds)
+            .ok()
+            .and_then(chrono::TimeDelta::try_seconds)
+            .filter(|d| {
+                chrono::Utc::now()
+                    .checked_add_signed(*d)
+                    .is_some_and(|at| chrono::Datelike::year(&at) <= 9999)
+                    && std::time::Instant::now()
+                        .checked_add(Duration::from_secs(self.approval_ttl_seconds))
+                        .is_some()
+            })
+            .ok_or_else(|| io::Error::other("invalid approvalTtlSeconds"))
     }
 }
 

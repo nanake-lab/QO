@@ -16,6 +16,7 @@ pub struct Options {
     pub login_seconds: Option<u64>,
     pub approval_seconds: Option<u64>,
     pub retain_events: Option<usize>,
+    pub pause_delivery: bool,
 }
 
 /// Configure a child and identify its discovery directory. Restart uses the same root and port.
@@ -25,6 +26,7 @@ pub trait Target {
 }
 pub struct Real(pub &'static str);
 pub struct Mock(pub &'static str);
+pub struct ScriptedReal(pub &'static str);
 
 pub fn isolated(root: &Path, binary: &str) -> Command {
     let mut c = Command::new(binary);
@@ -39,8 +41,6 @@ pub fn isolated(root: &Path, binary: &str) -> Command {
 
 impl Target for Real {
     fn command(&self, root: &Path, port: u16, o: Options) -> Command {
-        // QO-02 will map business-suite options to its test adapter and retention settings.
-        assert!(o.approval_seconds.is_none() && o.retain_events.is_none());
         let config = root.join(if cfg!(windows) {
             "QO/config"
         } else {
@@ -51,11 +51,31 @@ impl Target for Real {
         if let Some(n) = o.login_seconds {
             settings["loginLinkSeconds"] = json!(n);
         }
+        if let Some(n) = o.approval_seconds {
+            settings["approvalTtlSeconds"] = json!(n);
+        }
         fs::write(config.join("settings.json"), settings.to_string()).unwrap();
         isolated(root, self.0)
     }
     fn discovery(&self, root: &Path) -> PathBuf {
         root.join(if cfg!(windows) { "QO/run" } else { "run/qo" })
+    }
+}
+
+impl Target for ScriptedReal {
+    fn command(&self, root: &Path, port: u16, options: Options) -> Command {
+        let mut cmd = Real(self.0).command(root, port, options);
+        cmd.arg("--test-harness");
+        if let Some(n) = options.retain_events {
+            cmd.env("QO_TEST_RETAIN_EVENTS", n.to_string());
+        }
+        if options.pause_delivery {
+            cmd.env("QO_TEST_DELIVERY_MARKER", root.join("before-delivery"));
+        }
+        cmd
+    }
+    fn discovery(&self, root: &Path) -> PathBuf {
+        Real(self.0).discovery(root)
     }
 }
 

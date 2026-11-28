@@ -86,27 +86,45 @@ fn newer_database_stops_real_service_before_discovery() {
     });
     fs::create_dir_all(&state).unwrap();
     let db = rusqlite::Connection::open(state.join("qo.sqlite3")).unwrap();
-    db.execute_batch("PRAGMA user_version = 2").unwrap();
+    db.execute_batch("PRAGMA user_version = 3").unwrap();
     drop(db);
-    let mut server = Server(
-        isolated(root.path(), SERVER)
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
+    let error = startup_error(root.path(), isolated(root.path(), SERVER));
+    assert!(
+        error.contains("Version(3)") || error.contains("database version 3"),
+        "{error}"
     );
+}
+
+fn startup_error(root: &std::path::Path, mut command: std::process::Command) -> String {
+    let mut server = Server(command.stderr(Stdio::piped()).spawn().unwrap());
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(status) = server.0.try_wait().unwrap() {
             assert!(!status.success());
             break;
         }
-        assert!(Instant::now() < deadline, "service accepted a newer schema");
+        assert!(
+            Instant::now() < deadline,
+            "invalid configuration reached service startup"
+        );
         thread::sleep(Duration::from_millis(25));
     }
     let error = std::io::read_to_string(server.0.stderr.take().unwrap()).unwrap();
-    assert!(
-        error.contains("Version(2)") || error.contains("database version 2"),
-        "{error}"
-    );
-    assert!(!TARGET.discovery(root.path()).join("endpoint.json").exists());
+    assert!(!TARGET.discovery(root).join("endpoint.json").exists());
+    error
+}
+
+#[test]
+fn zero_event_limits_are_rejected_before_startup() {
+    for field in ["eventRetentionDays", "eventRetentionBytes"] {
+        let root = tempfile::tempdir().unwrap();
+        let command = TARGET.command(root.path(), 47261, Default::default());
+        let config = root.path().join(if cfg!(windows) {
+            "QO/config"
+        } else {
+            "config/qo"
+        });
+        fs::write(config.join("settings.json"), format!(r#"{{"{field}":0}}"#)).unwrap();
+        assert!(startup_error(root.path(), command).contains(field));
+    }
 }

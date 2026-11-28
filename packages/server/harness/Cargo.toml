@@ -1,0 +1,17 @@
+[package]
+name = "qo-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+test-harness = ["dep:chrono", "dep:serde", "dep:uuid"]
+
+[dependencies]
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"], optional = true }
+serde = { workspace = true, optional = true }
+uuid = { version = "=1.29.3", features = ["v4"], optional = true }
+qo-protocol.workspace = true
+serde_json.workspace = true

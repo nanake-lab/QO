@@ -42,10 +42,15 @@ impl Failure {
 
 pub type RpcResult = Result<Value, Failure>;
 
-/// A batch keeps historical replay ordered with live pushes on the same socket.
+pub(crate) enum Outbound {
+    Frames(Vec<Value>),
+    Replay(crate::storage::Replay),
+}
+
+/// Replay and live batches share one bounded FIFO per socket.
 #[derive(Clone)]
 pub struct Notifications {
-    pub(crate) tx: mpsc::Sender<Vec<Value>>,
+    pub(crate) tx: mpsc::Sender<Outbound>,
     pub(crate) overflow: watch::Sender<bool>,
 }
 impl Notifications {
@@ -67,7 +72,11 @@ impl Notifications {
                 json!({"jsonrpc":"2.0","method":method,"params":params})
             })
             .collect();
-        if self.tx.try_send(frames).is_err() {
+        self.enqueue(Outbound::Frames(frames));
+    }
+
+    pub(crate) fn enqueue(&self, message: Outbound) {
+        if self.tx.try_send(message).is_err() {
             // Disconnect slow consumers; they can resume from their applied cursor.
             self.overflow.send_replace(true);
         }
@@ -79,9 +88,9 @@ pub trait Backend: Send + Sync + 'static {
     fn disconnected(&self, _peer: Peer) {}
     fn call(&self, peer: Peer, method: Method, params: Value) -> RpcResult;
 }
-#[cfg(any(feature = "embedded-web", test))]
+#[cfg(test)]
 pub(crate) struct Bootstrap;
-#[cfg(any(feature = "embedded-web", test))]
+#[cfg(test)]
 impl Backend for Bootstrap {
     fn call(&self, _: Peer, _: Method, _: Value) -> RpcResult {
         Err(ErrorReason::MethodNotFound.into())
