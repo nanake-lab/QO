@@ -1,6 +1,6 @@
 # QO protocol conformance
 
-Build the web assets with `pnpm build:web`. Run all four groups against the mock with `cargo test --locked -p qo-mock --test conformance`. Run the connection group against the server with `cargo test --locked -p qo-server --test conformance`. To run one group, append its module filter, for example `events::`.
+Build the web assets with `pnpm build:web`. Run all four groups against the mock with `cargo test --locked -p qo-mock --test conformance`. Run all four groups and crash recovery against the server with `cargo test --locked -p qo-server --features test-harness --test conformance`. To run one group, append its module filter, for example `events::`.
 
 | Group        | Contract                                                                                |
 | ------------ | --------------------------------------------------------------------------------------- |
@@ -11,8 +11,8 @@ Build the web assets with `pnpm build:web`. Run all four groups against the mock
 
 The package integration tests select groups explicitly. Each group launches an isolated child and exercises the public wire protocol. The client validates every JSON-RPC result, error and notification and checks incoming frames for credentials used in that test.
 
-For QO-02, register the other three groups in the real server's conformance test entry point. Supply a **test-build-only** harness adapter that reads `packages/mock-server/scenarios/`, and map the group's expiry and retention settings to the test launch configuration. Production builds must exclude that adapter and its scenario trigger.
+The server tests launch the real service entry point with the test-only `--test-harness` flag. Both targets use the scripts in `packages/mock-server/scenarios/`. The recovery test kills its child after a decision is recorded and before delivery, then checks the recovered snapshot against its event stream. Production server and desktop builds exclude the feature.
 
 ## 中文
 
-mock 运行四组，真服务当前运行连接组。QO-02 接入任务执行时，在真服务测试入口启用归属、事件和审批三组，用仅在测试构建中启用的适配器读取同一批场景。正式构建排除这条入口。
+真服务和 mock 都运行连接、任务、事件和审批四组测试。真服务另测进程强杀后的对账和事件补发。脚本 harness 仅在测试构建和 mock 中启用。

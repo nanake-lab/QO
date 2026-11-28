@@ -310,14 +310,14 @@ fn usage_dimensions_replace_only_the_matching_snapshot() -> Result<()> {
 fn refuses_newer_schema_without_modifying_it() -> Result<()> {
     let dir = tempdir()?;
     let db = Connection::open(dir.path().join("qo.sqlite3"))?;
-    db.execute_batch("PRAGMA user_version=2")?;
+    db.execute_batch("PRAGMA user_version=3")?;
     assert!(matches!(
         Store::open_in(dir.path(), &Settings::default()),
-        Err(Error::Version(2))
+        Err(Error::Version(3))
     ));
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-        2
+        3
     );
     Ok(())
 }
@@ -332,4 +332,44 @@ fn retention_settings_are_optional_and_strict() {
     assert_eq!(custom.event_retention_days, 0);
     assert_eq!(custom.event_retention_bytes, 42);
     assert!(serde_json::from_value::<Settings>(json!({"retentionBytes":1})).is_err());
+}
+
+#[test]
+fn replay_keeps_its_pages_while_live_writes_prune_history() -> Result<()> {
+    let dir = tempdir()?;
+    let store = Store::open_in(dir.path(), &Settings::default())?;
+    let at = store.read(now)?;
+    store.write(|tx| {
+        for _ in 0..150 {
+            tx.append_event(event(&at))?;
+        }
+        Ok(())
+    })?;
+    let mut replay = store.begin_replay(0)?;
+    let mut history = replay.next_page()?;
+    assert!(!history.is_empty() && history.len() < 150);
+    store.write(|tx| {
+        tx.append_event(event("2000-01-01T00:00:00Z"))?;
+        tx.append_event(event(&at))?;
+        Ok(())
+    })?;
+    assert!(matches!(
+        store.begin_replay(0),
+        Err(Error::CursorExpired {
+            oldest: 152,
+            high: 152
+        })
+    ));
+    loop {
+        let page = replay.next_page()?;
+        if page.is_empty() {
+            break;
+        }
+        history.extend(page);
+    }
+    assert_eq!(history.len(), 150);
+    for (i, e) in history.iter().enumerate() {
+        assert_eq!(e["cursor"], (i + 1).to_string());
+    }
+    Ok(())
 }

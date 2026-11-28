@@ -1,16 +1,13 @@
-mod callbacks;
-mod scenario;
-mod state;
-mod tasks;
-
+use qo_harness::scripted::Scripted;
 use qo_protocol::Method;
-use qo_server::{Assets, Peer, Role, Settings};
+use qo_server::{Assets, Backend, Peer, Role, ServiceBackend, Settings, storage::Store};
 use serde_json::json;
-use state::{Mock, State, id};
+fn id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tempfile::TempDir;
@@ -88,7 +85,7 @@ impl Options {
     }
 }
 
-fn seed(s: &mut State) {
+fn seed(s: &ServiceBackend) -> io::Result<()> {
     // No real client has the synthetic creator's private key or connection.
     let peer = Peer {
         id: 0,
@@ -101,26 +98,43 @@ fn seed(s: &mut State) {
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    s.dispatch(
+    s.call(
         peer,
         Method::TaskCreate,
         json!({"taskId":task, "name":"外部客户端示例","ownerKey":key}),
     )
     .unwrap();
-    s.dispatch(
+    s.call(
         peer,
         Method::SessionOpen,
         json!({"taskId":task,"sessionId":session,"model":"mock"}),
     )
     .unwrap();
-    s.dispatch(
+    s.call(
         peer,
         Method::TurnStart,
         json!({"sessionId":session,"turnId":id(),"input":"scenario:approval"}),
     )
     .unwrap();
-    s.tick();
-    s.owners.get_mut(&task).unwrap().holder = None;
+    // The three startup lines promise a ready example, including its pending approval.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let list = s
+            .call(peer, Method::ApprovalList, json!({"taskId":task}))
+            .map_err(|_| io::Error::other("seed task unavailable"))?;
+        if list["requests"]
+            .as_array()
+            .is_some_and(|requests| !requests.is_empty())
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("seed scenario did not request approval"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    s.disconnected(peer);
+    Ok(())
 }
 
 // The web build may start after the mock. Resolve its existing ancestor, including symlinks.
@@ -159,49 +173,52 @@ async fn main() -> io::Result<()> {
     {
         return Err(invalid("web assets overlap private mock files"));
     }
-    if let Ok(real) = qo_server::runtime_dir() {
-        let real = resolved_path(&std::path::absolute(real)?)?;
+    if let Ok(private_dirs) = qo_server::private_dirs() {
         let run = resolved_path(&root.join("run"))?;
-        if run.starts_with(&real)
-            || real.starts_with(&run)
-            || web.starts_with(&real)
-            || real.starts_with(&web)
-        {
-            return Err(invalid("mock paths overlap the real runtime directory"));
+        for path in private_dirs {
+            let real = resolved_path(&std::path::absolute(path)?)?;
+            if run.starts_with(&real)
+                || real.starts_with(&run)
+                || web.starts_with(&real)
+                || real.starts_with(&web)
+            {
+                return Err(invalid("mock paths overlap private service files"));
+            }
         }
     }
     fs::create_dir_all(root.join("config"))?;
-    let ttl = i64::try_from(o.ttl)
-        .ok()
-        .and_then(chrono::TimeDelta::try_seconds)
-        .filter(|ttl| chrono::Utc::now().checked_add_signed(*ttl).is_some())
-        .ok_or_else(|| invalid("invalid approval TTL"))?;
-    let mut state = State::new(o.retain, ttl, root.join("workspaces"));
-    if o.seed {
-        seed(&mut state);
+    let settings = Settings {
+        port: o.port,
+        login_link_seconds: o.login_ttl,
+        approval_ttl_seconds: o.ttl,
+        ..Settings::default()
+    };
+    let state = tempfile::Builder::new()
+        .prefix("qo-state-")
+        .tempdir_in(&root)?;
+    let state_path = state.path().canonicalize()?;
+    if state_path.starts_with(&web) || web.starts_with(&state_path) {
+        return Err(invalid("web assets overlap private mock state"));
     }
-    let backend = Arc::new(Mock(Mutex::new(state)));
-    let playback = backend.clone();
-    tokio::spawn(async move {
-        // One scheduler serializes script steps with RPC changes; 25 ms bounds UI playback jitter.
-        let mut interval = tokio::time::interval(Duration::from_millis(25));
-        loop {
-            interval.tick().await;
-            playback.0.lock().unwrap().tick();
-        }
-    });
-    qo_server::serve_with(
-        Settings {
-            port: o.port,
-            login_link_seconds: o.login_ttl,
-            ..Settings::default()
-        },
+    qo_server::serve_with_factory(
+        settings,
         root.join("run"),
         Assets::Directory(web),
-        backend,
-        |origin, link| {
-            println!("{origin}\n{}\n{link}", root.display());
+        |settings| {
+            let mut store = Store::open_in(&state_path, settings).map_err(io::Error::other)?;
+            store.limit_event_count(o.retain.map(|n| n as u64));
+            let backend = ServiceBackend::new(
+                store,
+                settings,
+                root.join("workspaces"),
+                Some(Box::new(Scripted::default())),
+            )?;
+            if o.seed {
+                seed(&backend)?;
+            }
+            Ok(backend)
         },
+        |origin, link| println!("{origin}\n{}\n{link}", root.display()),
     )
     .await
 }

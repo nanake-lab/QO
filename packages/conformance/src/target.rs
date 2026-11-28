@@ -16,6 +16,8 @@ pub struct Options {
     pub login_seconds: Option<u64>,
     pub approval_seconds: Option<u64>,
     pub retain_events: Option<usize>,
+    pub pause_delivery: bool,
+    pub capture_stderr: bool,
 }
 
 /// Configure a child and identify its discovery directory. Restart uses the same root and port.
@@ -25,6 +27,7 @@ pub trait Target {
 }
 pub struct Real(pub &'static str);
 pub struct Mock(pub &'static str);
+pub struct ScriptedReal(pub &'static str);
 
 pub fn isolated(root: &Path, binary: &str) -> Command {
     let mut c = Command::new(binary);
@@ -39,8 +42,6 @@ pub fn isolated(root: &Path, binary: &str) -> Command {
 
 impl Target for Real {
     fn command(&self, root: &Path, port: u16, o: Options) -> Command {
-        // QO-02 will map business-suite options to its test adapter and retention settings.
-        assert!(o.approval_seconds.is_none() && o.retain_events.is_none());
         let config = root.join(if cfg!(windows) {
             "QO/config"
         } else {
@@ -51,11 +52,31 @@ impl Target for Real {
         if let Some(n) = o.login_seconds {
             settings["loginLinkSeconds"] = json!(n);
         }
+        if let Some(n) = o.approval_seconds {
+            settings["approvalTtlSeconds"] = json!(n);
+        }
         fs::write(config.join("settings.json"), settings.to_string()).unwrap();
         isolated(root, self.0)
     }
     fn discovery(&self, root: &Path) -> PathBuf {
         root.join(if cfg!(windows) { "QO/run" } else { "run/qo" })
+    }
+}
+
+impl Target for ScriptedReal {
+    fn command(&self, root: &Path, port: u16, options: Options) -> Command {
+        let mut cmd = Real(self.0).command(root, port, options);
+        cmd.arg("--test-harness");
+        if let Some(n) = options.retain_events {
+            cmd.env("QO_TEST_RETAIN_EVENTS", n.to_string());
+        }
+        if options.pause_delivery {
+            cmd.env("QO_TEST_DELIVERY_MARKER", root.join("before-delivery"));
+        }
+        cmd
+    }
+    fn discovery(&self, root: &Path) -> PathBuf {
+        Real(self.0).discovery(root)
     }
 }
 
@@ -134,6 +155,9 @@ impl<'a> Instance<'a> {
     pub fn restart(&mut self) {
         drop(self.process.take());
         let mut cmd = self.target.command(self.root(), self.port, self.options);
+        if self.options.capture_stderr {
+            cmd.stderr(Stdio::piped());
+        }
         let mut child = Process(cmd.stdout(Stdio::null()).spawn().unwrap());
         // Connect does not prove publication; obtain an HTTP response from the running router.
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -161,6 +185,22 @@ impl<'a> Instance<'a> {
         self.native = read("endpoint.json");
         self.desktop = read("desktop.json");
         self.process = Some(child);
+    }
+    pub(crate) fn wait_for_failure(&mut self) -> String {
+        let child = &mut self.process.as_mut().unwrap().0;
+        // Observe the child's own exit before restart(), which would otherwise kill it.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.code().is_some_and(|code| code != 0), "{status}");
+                return std::io::read_to_string(child.stderr.take().unwrap()).unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "service stayed alive after the storage failure"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     }
     pub fn isolated_command(&self, binary: &str) -> Command {
         isolated(self.root(), binary)

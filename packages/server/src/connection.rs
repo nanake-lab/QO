@@ -260,14 +260,21 @@ async fn rpc(mut socket: WebSocket, service: Service, client: Role) {
     let (overflow, mut lagged) = watch::channel(false);
     let out = Notifications { tx, overflow };
     let mut ready = false;
-    loop {
+    'socket: loop {
         let message = tokio::select! {
             _ = lagged.changed() => break,
-            Some(batch) = rx.recv() => {
-                for value in batch {
-                    if socket.send(Message::Text(value.to_string().into())).await.is_err() {
-                        service.backend.disconnected(peer);
-                        return;
+            Some(outbound) = rx.recv() => {
+                match outbound {
+                    crate::backend::Outbound::Replay(mut replay) => loop {
+                        let Ok(events) = replay.next_page() else {break 'socket};
+                        if events.is_empty() { break; }
+                        for event in events {
+                            let frame = json!({"jsonrpc":"2.0","method":"event","params":event});
+                            if !send(&mut socket, frame, &mut lagged).await {break 'socket;}
+                        }
+                    },
+                    crate::backend::Outbound::Frames(frames) => for frame in frames {
+                        if !send(&mut socket, frame, &mut lagged).await {break 'socket;}
                     }
                 }
                 continue;
@@ -313,17 +320,20 @@ async fn rpc(mut socket: WebSocket, service: Service, client: Role) {
                 json!({"jsonrpc":"2.0","id":id,"error":error})
             }
         };
-        if socket
-            .send(Message::Text(response.to_string().into()))
-            .await
-            .is_err()
-            || !ready
-        {
+        if !send(&mut socket, response, &mut lagged).await || !ready {
             break;
         }
     }
     if ready {
         service.backend.disconnected(peer);
+    }
+}
+
+async fn send(socket: &mut WebSocket, value: Value, lagged: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        biased;
+        _ = lagged.changed() => false,
+        sent = socket.send(Message::Text(value.to_string().into())) => sent.is_ok(),
     }
 }
 
@@ -348,6 +358,18 @@ pub async fn serve_with(
     started: impl FnOnce(&str, &str),
 ) -> io::Result<()> {
     let _instance = lock_instance(&dir)?;
+    serve_locked(settings, dir, assets, backend, started).await
+}
+
+pub async fn serve_with_factory(
+    settings: Settings,
+    dir: PathBuf,
+    assets: Assets,
+    build: impl FnOnce(&Settings) -> io::Result<Arc<dyn Backend>>,
+    started: impl FnOnce(&str, &str),
+) -> io::Result<()> {
+    let _instance = lock_instance(&dir)?;
+    let backend = build(&settings)?;
     serve_locked(settings, dir, assets, backend, started).await
 }
 

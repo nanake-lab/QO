@@ -2,10 +2,11 @@
 pub mod approvals;
 pub mod connection;
 pub mod events;
+pub mod recovery;
 mod target;
 pub mod tasks;
 mod wire;
-pub use target::{Instance, Mock, Options, Real, Target, isolated};
+pub use target::{Instance, Mock, Options, Real, ScriptedReal, Target, isolated};
 
 use serde_json::{Value, json};
 use wire::Client;

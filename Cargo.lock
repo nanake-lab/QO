@@ -3342,17 +3342,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "qo-mock"
+name = "qo-harness"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "qo-conformance",
  "qo-protocol",
- "qo-server",
  "serde",
  "serde_json",
- "sha2 0.10.9",
- "subtle",
+ "uuid",
+]
+
+[[package]]
+name = "qo-mock"
+version = "0.1.0"
+dependencies = [
+ "qo-conformance",
+ "qo-harness",
+ "qo-protocol",
+ "qo-server",
+ "serde_json",
  "tempfile",
  "tokio",
  "tungstenite",
@@ -3375,20 +3383,24 @@ name = "qo-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "getrandom 0.4.3",
  "hex",
  "include_dir",
  "open",
  "qo-conformance",
+ "qo-harness",
  "qo-protocol",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tungstenite",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
